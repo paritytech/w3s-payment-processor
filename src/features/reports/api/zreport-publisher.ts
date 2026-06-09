@@ -1,39 +1,29 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // @paritytech
 
-/**
- * Engine-side Z-report publish orchestration: resolve the unlock creds + a
- * host signer, push the encrypted report on-chain via `publishZReport`, and
- * persist the resulting publish state (published / conflict) back into KV +
- * the v1 store. Failures other than a conflict leave the report `pending`
- * for a manual retry from the Reports screen.
- */
 import { envConfig } from "@/config.ts";
 import { loadSavedCreds } from "@/app/unlock-creds.ts";
 import { getProductAccountSigner, resolveHostProductAccount } from "@/shared/api/host/accounts.ts";
 import type { TxStatus } from "@/shared/api/contracts/watch-transaction.ts";
 import type { KvStore } from "@/shared/utils/kv-store.ts";
 import { appendZReport } from "@/features/v1/api/persistence.ts";
-import type { ZReportPublishState } from "@/features/v1/types.ts";
+import type { ZReportRecord } from "@/features/v1/types.ts";
 import { useV1Store } from "@/features/v1/store/useV1Store.ts";
 import { publishZReport, ReportConflictError } from "./report-storage.ts";
 
 export type ZReportPublish = (seq: number, onStatus?: (status: TxStatus) => void) => Promise<void>;
 
 export function createZReportPublisher(kv: KvStore): ZReportPublish {
-  async function persistPublishState(
-    seq: number,
-    publishState: ZReportPublishState,
-    cid?: string,
-  ): Promise<void> {
+  async function patchReport(seq: number, patch: Partial<ZReportRecord>): Promise<ZReportRecord | null> {
     const current = useV1Store.getState().zReports;
     const idx = current.findIndex((report) => report.seq === seq);
-    if (idx < 0) return;
-    const updated = { ...current[idx]!, publishState, ...(cid !== undefined ? { cid } : {}) };
+    if (idx < 0) return null;
+    const updated = { ...current[idx]!, ...patch };
     await appendZReport(kv, updated);
     const next = [...current];
     next[idx] = updated;
     useV1Store.setState({ zReports: next });
+    return updated;
   }
 
   return async (seq, onStatus) => {
@@ -66,13 +56,36 @@ export function createZReportPublisher(kv: KvStore): ZReportPublish {
         signer,
         walletAddress,
         onStatus,
+        lastAttemptCid: record.lastAttemptCid,
+        onPreimageUploaded: async (attemptCid) => {
+          await patchReport(seq, { lastAttemptCid: attemptCid });
+        },
       });
-      await persistPublishState(seq, "published", cid);
+      await patchReport(seq, { publishState: "published", cid });
     } catch (caught) {
       if (caught instanceof ReportConflictError) {
-        await persistPublishState(seq, "conflict");
+        await patchReport(seq, { publishState: "conflict" });
+        throw caught;
+      }
+      if (isTransientChainError(caught)) {
+        throw new Error(
+          "The chain connection dropped mid-publish. The report stays pending — " +
+            "press Publish to retry; an already-landed upload is detected and reused.",
+          { cause: caught },
+        );
       }
       throw caught;
     }
   };
+}
+
+/**
+ * Connection-level failures (vs signer rejections / dispatch errors). A host
+ * bridge reconnect surfaces as polkadot-api's `RpcError: Internal error`;
+ * raw WS drops as WebSocket/disconnect messages.
+ */
+function isTransientChainError(caught: unknown): boolean {
+  if (!(caught instanceof Error)) return false;
+  if (caught.name === "RpcError") return true;
+  return /internal error|websocket|disconnected|connection (lost|closed)/i.test(caught.message);
 }

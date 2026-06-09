@@ -5,6 +5,8 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 
 import { useProcessorConfig } from "@/shared/store/useProcessorConfig.tsx";
 import { startV1Monitor, type V1MonitorHandle } from "@/features/v1/api/engine.ts";
+import { clampPeriodStart, loadReportState, loadZReports } from "@/features/v1/api/persistence.ts";
+import { resolveKvStore } from "@/shared/utils/kv-store.ts";
 import { useV1Store } from "@/features/v1/store/useV1Store.ts";
 
 const V1HandleContext = createContext<V1MonitorHandle | null>(null);
@@ -17,7 +19,23 @@ export function V1MonitorProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!config.v1.enabled || !config.v1.mode) {
       setHandle(null);
-      return;
+      // Fiscal state (Z reports, period cursor) is rail-neutral: hydrate it
+      // from KV even without the v1 chain watch, so coin-only (v2) setups can
+      // still close out, list past closes, and publish.
+      let cancelled = false;
+      void (async () => {
+        const kv = resolveKvStore();
+        const [reportState, zReports] = await Promise.all([loadReportState(kv), loadZReports(kv)]);
+        if (cancelled) return;
+        useV1Store.setState({
+          reportState: clampPeriodStart(reportState ?? { periodStartBlock: 0, lastZSeq: 0 }, zReports),
+          zReports,
+          fiscalHydrated: true,
+        });
+      })();
+      return () => {
+        cancelled = true;
+      };
     }
     // One controller per run. Cleanup aborts it, which stops the in-flight
     // backfill and silences its store writes — so a StrictMode remount or a
@@ -45,8 +63,8 @@ export function useV1Monitor() {
   const handle = useContext(V1HandleContext);
   return {
     ...state,
-    commitZReport: handle?.commitZReport ?? (async () => {}),
-    publishZReport: handle?.publishZReport ?? (async () => {}),
+    /** False until the engine handle exists — actions below are no-ops before that. */
+    engineReady: handle != null,
     toggleReconcile: handle?.toggleReconcile ?? (async () => {}),
   };
 }

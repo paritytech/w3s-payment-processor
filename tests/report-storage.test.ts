@@ -22,6 +22,7 @@ vi.mock("@/shared/api/host/host-api.ts", () => ({ preimageManager: { submit: vi.
 import { publishZReport, ReportConflictError } from "@/features/reports/api/report-storage.ts";
 import { calculateBulletinCidObject } from "@/shared/utils/wire/cid.ts";
 import type { ZReportRecord } from "@/features/v1/types.ts";
+import { decryptCredentialEnvelope } from "@/shared/utils/wire/credential-envelope.ts";
 
 const RECORD: ZReportRecord = {
   seq: 7,
@@ -30,6 +31,10 @@ const RECORD: ZReportRecord = {
   lines: [{ terminalId: "t1", payoutHex: `0x${"a".repeat(64)}`, totalPlanck: "3000", count: 2 }],
   grandTotalPlanck: "3000",
   count: 2,
+  payments: [
+    { paymentId: "0xb1:x0:0xaa", terminalId: "t1", amountPlanck: "1000", blockNumber: 5, observedAtMs: 50 },
+    { paymentId: "0xb2:x1:0xaa", terminalId: "t1", amountPlanck: "2000", blockNumber: 9, observedAtMs: 90, fromHex: `0x${"b".repeat(64)}` },
+  ],
   committedAtMs: 123,
   source: "v1",
   publishState: "pending",
@@ -55,6 +60,11 @@ function honestPreimage() {
   };
 }
 
+/** Queue one pre-check read answering "slot is empty" (the normal first read). */
+function mockEmptySlot() {
+  readContractMock.mockResolvedValueOnce([{ seq: 0n, cid: "", size: 0, committedAt: 0n, exists: false }]);
+}
+
 beforeEach(() => {
   writeContractMock.mockReset();
   readContractMock.mockReset();
@@ -62,6 +72,7 @@ beforeEach(() => {
 
 describe("publishZReport", () => {
   it("publishes and returns the cid when the read-back matches our upload", async () => {
+    mockEmptySlot();
     // The write captures the cid arg, then the read-back returns that same cid.
     writeContractMock.mockImplementation(async (_client: unknown, opts: { args: readonly unknown[] }) => {
       const [groupId, seq, cid, size] = opts.args;
@@ -88,8 +99,49 @@ describe("publishZReport", () => {
     expect(result.size).toBeGreaterThan(0);
   });
 
-  it("throws ReportConflictError when the on-chain cid was pre-empted by another writer", async () => {
-    writeContractMock.mockResolvedValue("0xhash");
+  it("uploads an encrypted ProcessorReportDoc that decrypts with the group passkey", async () => {
+    let uploaded: Uint8Array | undefined;
+    const preimage = {
+      submit: async (bytes: Uint8Array): Promise<`0x${string}`> => {
+        uploaded = bytes;
+        return bytesToHex(calculateBulletinCidObject(bytes).multihash.digest);
+      },
+    };
+    mockEmptySlot();
+    writeContractMock.mockImplementation(async (_client: unknown, opts: { args: readonly unknown[] }) => {
+      const [, seq, cid, size] = opts.args;
+      readContractMock.mockResolvedValueOnce([{ seq, cid, size, committedAt: 1n, exists: true }]);
+      return "0xhash";
+    });
+
+    await publishZReport({
+      groupId: "funkhaus-zola",
+      record: RECORD,
+      passkey: "pw",
+      signer: SIGNER,
+      walletAddress: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+      preimage,
+      inHost: () => true,
+    });
+
+    // The uploaded bytes are the JSON envelope; the plaintext under it must be
+    // the versioned report doc — this is the admin-side compatibility proof.
+    const envelope = JSON.parse(new TextDecoder().decode(uploaded!)) as unknown;
+    const plaintext = await decryptCredentialEnvelope(envelope, "pw");
+    const doc = JSON.parse(new TextDecoder().decode(plaintext)) as Record<string, unknown>;
+    expect(doc.format).toBe("w3s-processor-report");
+    expect(doc.version).toBe(1);
+    expect(doc.kind).toBe("z");
+    expect(doc.groupId).toBe("funkhaus-zola");
+    expect(doc.seq).toBe(7);
+    expect(doc.generatedAtMs).toBe(RECORD.committedAtMs);
+    expect(doc.payments).toEqual(RECORD.payments);
+    // Local-only lifecycle fields must not be in the published bytes.
+    expect("publishState" in doc).toBe(false);
+    expect("committedAtMs" in doc).toBe(false);
+  });
+
+  it("throws ReportConflictError when the slot holds a foreign cid, without writing", async () => {
     readContractMock.mockResolvedValue([
       { seq: 7n, cid: "bafkSomeoneElsesCid", size: 99, committedAt: 1n, exists: true },
     ]);
@@ -105,6 +157,67 @@ describe("publishZReport", () => {
         inHost: () => true,
       }),
     ).rejects.toBeInstanceOf(ReportConflictError);
+    expect(writeContractMock).not.toHaveBeenCalled();
+  });
+
+  it("recognizes a landed previous attempt via lastAttemptCid and skips re-upload", async () => {
+    readContractMock.mockResolvedValueOnce([
+      { seq: 7n, cid: "bafkPreviousAttempt", size: 321, committedAt: 1n, exists: true },
+    ]);
+    let submitted = false;
+    const result = await publishZReport({
+      groupId: "funkhaus-zola",
+      record: RECORD,
+      passkey: "pw",
+      signer: SIGNER,
+      walletAddress: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+      lastAttemptCid: "bafkPreviousAttempt",
+      preimage: {
+        submit: async (): Promise<`0x${string}`> => {
+          submitted = true;
+          return "0x";
+        },
+      },
+      inHost: () => true,
+    });
+    expect(result).toEqual({ cid: "bafkPreviousAttempt", size: 321 });
+    expect(submitted).toBe(false);
+    expect(writeContractMock).not.toHaveBeenCalled();
+  });
+
+  it("persists the attempt cid before the write and hands the watcher a slot oracle", async () => {
+    mockEmptySlot();
+    const order: string[] = [];
+    let attemptCid: string | undefined;
+    writeContractMock.mockImplementation(async (_client: unknown, opts: { args: readonly unknown[] }) => {
+      order.push("write");
+      const [, seq, cid, size] = opts.args;
+      readContractMock.mockResolvedValue([{ seq, cid, size, committedAt: 1n, exists: true }]);
+      return "0xhash";
+    });
+
+    const result = await publishZReport({
+      groupId: "funkhaus-zola",
+      record: RECORD,
+      passkey: "pw",
+      signer: SIGNER,
+      walletAddress: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+      onPreimageUploaded: (cid) => {
+        order.push("persist-attempt");
+        attemptCid = cid;
+      },
+      preimage: honestPreimage(),
+      inHost: () => true,
+    });
+
+    expect(order).toEqual(["persist-attempt", "write"]);
+    expect(attemptCid).toBe(result.cid);
+
+    // The oracle reads the slot and matches only our cid.
+    const opts = writeContractMock.mock.calls[0]![1] as {
+      waitForChainEffect: () => Promise<boolean>;
+    };
+    await expect(opts.waitForChainEffect()).resolves.toBe(true);
   });
 
   it("aborts before any upload when run outside a host", async () => {

@@ -82,6 +82,7 @@ export function watchTransaction(
 
   let settled = false;
   let pollLoopStopped = false;
+  let pollingStarted = false;
   let broadcastedHash: `0x${string}` | undefined;
   let subscription: { unsubscribe(): void } | null = null;
   let stallTimer: ReturnType<typeof setTimeout> | undefined;
@@ -147,7 +148,8 @@ export function watchTransaction(
 
   const startPolling = () => {
     const probe = options.waitForChainEffect;
-    if (!probe) return;
+    if (!probe || pollingStarted) return;
+    pollingStarted = true;
     const interval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     const timeout = options.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS;
 
@@ -234,6 +236,14 @@ export function watchTransaction(
         }
       },
       error(error) {
+
+        if (options.waitForChainEffect != null && broadcastedHash !== undefined && !settled) {
+          console.warn("[watch-transaction] tx stream errored post-broadcast; relying on chain-effect poll", error);
+          armStall();
+          startPolling();
+          safeUnsubscribe();
+          return;
+        }
         fail(error);
       },
     });

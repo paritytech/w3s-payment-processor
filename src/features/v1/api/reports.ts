@@ -4,10 +4,9 @@
 import type {
   PaymentEvent,
   ReportLine,
+  ReportPayment,
   ReportSnapshot,
-  ReportState,
   V1Terminal,
-  ZReportRecord,
 } from "@/features/v1/types.ts";
 
 /**
@@ -31,6 +30,7 @@ export function computeReport(
 
   let grandTotal = 0n;
   let count = 0;
+  const payments: ReportPayment[] = [];
   for (const event of events) {
     if (event.blockNumber < fromBlock || event.blockNumber > toBlock) continue;
     let line = totals.get(event.terminalId);
@@ -45,7 +45,16 @@ export function computeReport(
     line.count += 1;
     grandTotal += amount;
     count += 1;
+    payments.push({
+      paymentId: event.paymentId,
+      terminalId: event.terminalId,
+      amountPlanck: event.amountPlanck,
+      blockNumber: event.blockNumber,
+      observedAtMs: event.observedAtMs,
+      ...(event.fromHex !== undefined ? { fromHex: event.fromHex } : {}),
+    });
   }
+  payments.sort((a, b) => (a.blockNumber ?? 0) - (b.blockNumber ?? 0) || (a.paymentId < b.paymentId ? -1 : 1));
 
   const lines: ReportLine[] = [...totals.values()].map((line) => ({
     terminalId: line.terminalId,
@@ -53,30 +62,5 @@ export function computeReport(
     totalPlanck: line.total.toString(),
     count: line.count,
   }));
-  return { fromBlock, toBlock, lines, grandTotalPlanck: grandTotal.toString(), count };
-}
-
-export interface CommittedZReport {
-  record: ZReportRecord;
-  nextState: ReportState;
-}
-
-/**
- * Commit a Z report (RFC6 fiscal close) over `[state.periodStartBlock,
- * toBlock]`, assign the next sequence, and advance the open period to
- * `toBlock + 1`. Pure: the caller persists `record` + `nextState`.
- */
-export function commitZReport(
-  state: ReportState,
-  events: readonly PaymentEvent[],
-  toBlock: number,
-  terminals: readonly V1Terminal[],
-  nowMs: number,
-): CommittedZReport {
-  const snapshot = computeReport(events, state.periodStartBlock, toBlock, terminals);
-  const seq = state.lastZSeq + 1;
-  return {
-    record: { ...snapshot, seq, committedAtMs: nowMs, source: "v1", publishState: "pending" },
-    nextState: { periodStartBlock: toBlock + 1, lastZSeq: seq },
-  };
+  return { fromBlock, toBlock, lines, grandTotalPlanck: grandTotal.toString(), count, payments };
 }

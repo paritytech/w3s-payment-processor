@@ -56,6 +56,22 @@ export interface StreamTotals {
   count: number;
 }
 
+/
+export interface XReportStamp {
+  asOfMs: number;
+  count: number;
+  total: number;
+}
+
+export interface ZHistoryPayment {
+  id: string;
+  tsMs: number;
+  terminalId: string;
+  amount: number;
+  /** RFC-6 block; abent for coin payments. */
+  blockNumber?: number;
+}
+
 export interface ZHistoryEntry {
   seq: number;
   closedAtMs: number;
@@ -64,4 +80,6 @@ export interface ZHistoryEntry {
   perTill: Map<string, number>;
   publishState: ZReportPublishState;
   cid?: string;
+  /** Every payment swept by this close, oldest first — the browsable history. */
+  payments: ZHistoryPayment[];
 }
