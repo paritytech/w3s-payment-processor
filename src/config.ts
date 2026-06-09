@@ -5,7 +5,6 @@ import { resolveNetwork, type NetworkKey } from "@/shared/api/host/networks.ts";
 import {
   readBigInt,
   readBool,
-  readCredentialMap,
   readInt,
   readString,
   readStringRequired,
@@ -83,6 +82,10 @@ function readEnv() {
         "VITE_BULLETIN_IPFS_GATEWAY",
         "https://paseo-bulletin-next-ipfs.polkadot.io",
       ),
+      registryAddress: readString(
+        "VITE_W3SPAY_REGISTRY_ADDRESS",
+        "0x70f6a449d770931419cfa8d8412e3a5d6377e905",
+      ),
     },
     telemetry: {
       dsn: (import.meta.env.VITE_SENTRY_DSN ?? "").trim(),
@@ -93,18 +96,5 @@ function readEnv() {
 }
 
 export const envConfig = readEnv();
-
-/**
- * Maps each POS group id to the HTTPS URL or `ipfs://<cid>` of its
- * AES-256-GCM-encrypted credential bundle. Parsed from `VITE_CREDENTIAL_MAP`
- * — a JSON object string so deployments require no source change:
- *
- * CIDs are not secrets; only the merchant passkey unlocks the content.
- * An unset or empty env var yields an empty map (app stays locked until configured).
- */
-export const credentialMap: Record<string, string> = readCredentialMap(
-  (import.meta.env.VITE_CREDENTIAL_MAP as string | undefined) ?? "",
-);
-
 
 export const isDev: boolean = import.meta.env.DEV;

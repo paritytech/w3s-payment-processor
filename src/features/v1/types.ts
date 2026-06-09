@@ -70,11 +70,17 @@ export interface ReportSnapshot {
   count: number;
 }
 
+export type ZReportPublishState = "pending" | "published" | "conflict";
+
 /** A committed Z report — the RFC6 fiscal close for a period. */
 export interface ZReportRecord extends ReportSnapshot {
   seq: number;
   committedAtMs: number;
   source: "v1";
+  /** On-chain publish lifecycle for this report's encrypted CID. */
+  publishState: ZReportPublishState;
+  /** Bulletin CID of the published encrypted report, set once `published`. */
+  cid?: string;
 }
 
 export interface ReportState {

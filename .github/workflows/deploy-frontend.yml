@@ -71,7 +71,7 @@ jobs:
         env:
           MNEMONIC: ${{ secrets.DOTNS_MNEMONIC }}
           VITE_NETWORK: ${{ vars.VITE_NETWORK || 'paseo-next-v2' }}
-          VITE_CREDENTIAL_MAP: ${{ vars.VITE_CREDENTIAL_MAP || '{}' }}
+          VITE_W3SPAY_REGISTRY_ADDRESS: ${{ vars.VITE_W3SPAY_REGISTRY_ADDRESS || '0x70f6a449d770931419cfa8d8412e3a5d6377e905' }}
           NODE_OPTIONS: '--max-old-space-size=8192'
 
       - name: Comment on PR

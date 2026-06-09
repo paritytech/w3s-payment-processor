@@ -76,7 +76,7 @@ export function commitZReport(
   const snapshot = computeReport(events, state.periodStartBlock, toBlock, terminals);
   const seq = state.lastZSeq + 1;
   return {
-    record: { ...snapshot, seq, committedAtMs: nowMs, source: "v1" },
+    record: { ...snapshot, seq, committedAtMs: nowMs, source: "v1", publishState: "pending" },
     nextState: { periodStartBlock: toBlock + 1, lastZSeq: seq },
   };
 }

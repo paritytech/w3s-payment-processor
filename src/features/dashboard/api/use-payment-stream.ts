@@ -62,6 +62,7 @@ export interface PaymentStream {
   toggleCheck: (id: string) => void;
   checkAll: () => void;
   closeOut: () => void;
+  publishReport: (seq: number) => Promise<void>;
 }
 
 export function usePaymentStream(): PaymentStream {
@@ -166,6 +167,8 @@ export function usePaymentStream(): PaymentStream {
           total: toToken(z.grandTotalPlanck, decimals),
           count: z.count,
           perTill: new Map(z.lines.map((l) => [l.terminalId, toToken(l.totalPlanck, decimals)])),
+          publishState: z.publishState,
+          cid: z.cid,
         }))
         .sort((a, b) => b.seq - a.seq),
     [v1.zReports, decimals],
@@ -206,6 +209,15 @@ export function usePaymentStream(): PaymentStream {
     void v1.commitZReport().then(() => flash("Day closed out — new period started", "green"));
   }, [v1, flash]);
 
+  const publishReport = useCallback(
+    (seq: number): Promise<void> =>
+      v1.publishZReport(seq).then(
+        () => flash(`Report Z·${String(seq).padStart(4, "0")} published on-chain`, "green"),
+        (error) => flash(error instanceof Error ? error.message : "Publish failed", "red"),
+      ),
+    [v1, flash],
+  );
+
   return {
     shop: { name: config.profile.merchantName, venue: config.profile.merchantId },
     terminals,
@@ -228,5 +240,6 @@ export function usePaymentStream(): PaymentStream {
     toggleCheck,
     checkAll,
     closeOut,
+    publishReport,
   };
 }

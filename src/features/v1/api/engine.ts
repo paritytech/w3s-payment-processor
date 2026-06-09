@@ -33,6 +33,8 @@ import {
 } from "@/features/v1/api/persistence.ts";
 import { resolveV1Terminals } from "@/features/v1/api/registry.ts";
 import { commitZReport } from "@/features/v1/api/reports.ts";
+import { createZReportPublisher } from "@/features/reports/api/zreport-publisher.ts";
+import type { TxStatus } from "@/shared/api/contracts/watch-transaction.ts";
 import { useV1Store } from "@/features/v1/store/useV1Store.ts";
 import { startV1Watch } from "@/features/v1/api/watch.ts";
 import {
@@ -45,6 +47,8 @@ import { recordBootEvent } from "@/shared/api/host/debug/debug-store.ts";
 export interface V1MonitorHandle {
   stop(): void;
   commitZReport(): Promise<void>;
+  /** Encrypt + publish a committed Z report's CID on-chain (best-effort; retryable). */
+  publishZReport(seq: number, onStatus?: (status: TxStatus) => void): Promise<void>;
   toggleReconcile(paymentId: string): Promise<void>;
 }
 
@@ -69,6 +73,8 @@ export async function startV1Monitor(mode: ResolvedV1Mode, signal?: AbortSignal)
   let latestCheckpoint: number | undefined;
   let balanceTimer: ReturnType<typeof setInterval> | undefined;
 
+  const publishReport = createZReportPublisher(kv);
+
   const handle: V1MonitorHandle = {
     stop() {
       dbg("handle.stop() called");
@@ -89,7 +95,13 @@ export async function startV1Monitor(mode: ResolvedV1Mode, signal?: AbortSignal)
       await appendZReport(kv, record);
       await saveReportState(kv, nextState);
       useV1Store.setState({ zReports: [...state.zReports, record], reportState: nextState });
+      // Best-effort on-commit auto-publish; failures leave it `pending` for a
+      // manual retry from the Reports screen.
+      void publishReport(record.seq).catch((error) =>
+        dbg(`auto-publish seq ${record.seq} failed: ${errMessage(error)}`),
+      );
     },
+    publishZReport: publishReport,
     async toggleReconcile(paymentId: string) {
       const state = useV1Store.getState();
       const target = state.events.find((event) => event.paymentId === paymentId);

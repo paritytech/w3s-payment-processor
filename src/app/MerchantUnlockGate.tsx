@@ -9,6 +9,7 @@ import { Icon } from "@/shared/components/Icon.tsx";
 import { tone } from "@/shared/utils/tone.ts";
 import { resolveRemoteProcessorConfig, RemoteCredentialsError } from "@/shared/api/remote-credentials.ts";
 import type { ResolvedProcessorConfig } from "@/config.ts";
+import { loadSavedCreds, saveCreds } from "@/app/unlock-creds.ts";
 
 /**
  * Merchant credential unlock — the gate the SPA renders BEFORE any provider or
@@ -20,33 +21,6 @@ import type { ResolvedProcessorConfig } from "@/config.ts";
  */
 type UnlockStatus = "idle" | "unlocking" | "error";
 
-const CREDS_STORAGE_KEY = "w3spay-unlock-creds:v1";
-
-interface SavedCreds { groupId: string; passkey: string }
-
-function loadSaved(): SavedCreds {
-  try {
-    const raw = localStorage.getItem(CREDS_STORAGE_KEY);
-    if (!raw) return { groupId: "", passkey: "" };
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { groupId: "", passkey: "" };
-    const r = parsed as Record<string, unknown>;
-    return {
-      groupId: typeof r.groupId === "string" ? r.groupId : "",
-      passkey: typeof r.passkey === "string" ? r.passkey : "",
-    };
-  } catch {
-    return { groupId: "", passkey: "" };
-  }
-}
-
-function saveCreds(groupId: string, passkey: string): void {
-  try {
-    localStorage.setItem(CREDS_STORAGE_KEY, JSON.stringify({ groupId, passkey }));
-  } catch {
-    /* ignore storage failures (private mode / sandbox) */
-  }
-}
 
 async function saveBrowserCredential(groupId: string, passkey: string): Promise<void> {
   if (typeof window === "undefined" || !("PasswordCredential" in window)) return;
@@ -101,8 +75,8 @@ export function MerchantUnlockGate({
 }: {
   onUnlock: (config: ResolvedProcessorConfig) => void;
 }) {
-  const [groupId, setGroupId] = useState(() => loadSaved().groupId);
-  const [passkey, setPasskey] = useState(() => loadSaved().passkey);
+  const [groupId, setGroupId] = useState(() => loadSavedCreds().groupId);
+  const [passkey, setPasskey] = useState(() => loadSavedCreds().passkey);
   const [showPasskey, setShowPasskey] = useState(false);
   const [status, setStatus] = useState<UnlockStatus>("idle");
   const [message, setMessage] = useState<string | undefined>();
@@ -128,18 +102,22 @@ export function MerchantUnlockGate({
       setDetail(undefined);
       setShowDetail(false);
       const currentGroupId = groupId.trim();
+      console.log(`[unlock] ▶ Unlock pressed  group="${currentGroupId}"  passkey=${passkey.length} chars`);
       try {
         const config = await resolveRemoteProcessorConfig(currentGroupId, passkey);
         // Persist before clearing state so we still have both values.
         saveCreds(currentGroupId, passkey);
         void saveBrowserCredential(currentGroupId, passkey);
         setPasskey("");
+        console.log("[unlock] ✓ unlocked — handing config to app");
         onUnlock(config);
       } catch (error) {
         if (error instanceof RemoteCredentialsError) {
+          console.log(`[unlock] ✗ locked: ${error.message}${error.detail ? ` — ${error.detail}` : ""}`);
           setMessage(error.message);
           setDetail(error.detail);
         } else {
+          console.log(`[unlock] ✗ unexpected: ${error instanceof Error ? error.message : String(error)}`);
           setMessage("couldn't unlock the processor");
           setDetail(error instanceof Error ? error.message : String(error));
         }

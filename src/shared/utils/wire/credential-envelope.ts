@@ -5,10 +5,10 @@
  * The credential-envelope format for the remote merchant credential bundle.
  *
  * AES-256-GCM with a key derived from the merchant passkey via PBKDF2-SHA256.
- * THIS module owns the one documented envelope format; both the browser unlock
- * path (`@/shared/api/remote-credentials`) and the provisioning script
- * (`scripts/upload-remote-credentials.mjs`) encrypt/decrypt through it, so the
- * formats can never drift.
+ * THIS module owns the one documented envelope format; the browser unlock path
+ * (`@/shared/api/remote-credentials`) and the on-chain report publisher
+ * (`@/features/reports/api/report-storage`) encrypt/decrypt through it, and the
+ * w3spay-admin app vendors a byte-compatible copy — so the formats never drift.
  *
  * Wire shape — a UTF-8 JSON object (content-addressed on Bulletin, or served
  * over HTTPS):

@@ -7,8 +7,6 @@
    provider); family constants live on :root.
    ============================================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Serif+Display:ital@0;1&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
 /* ─── FAMILY-WIDE CONSTANTS (theme-independent) ─────────────── */
 :root {
   --font-sans:  'DM Sans', system-ui, -apple-system, sans-serif;
@@ -97,7 +95,16 @@
 /* ─── BASE ──────────────────────────────────────────────────── */
 * { box-sizing: border-box; }
 
-html, body, #root { height: 100%; }
+html, body, #root {
+  height: 100dvh;
+  /*
+   * Fixed-height app: the document never scrolls. Internal regions
+   * (.pay-scroll) own their own scroll. `overscroll-behavior` also
+   * suppresses iOS rubber-band over the locked surface.
+   */
+  overflow: hidden;
+  overscroll-behavior: none;
+}
 
 body {
   margin: 0;

@@ -45,27 +45,3 @@ export function readBool(key: string, fallback: boolean): boolean {
   if (typeof value !== "string" || value.trim() === "") return fallback;
   return value.trim().toLowerCase() === "true";
 }
-
-/**
- * Parses a JSON object string (e.g. from `VITE_CREDENTIAL_MAP`) into a
- * `Record<string, string>`, silently discarding non-string values and
- * returning an empty map on any parse error.
- */
-export function readCredentialMap(raw: string): Record<string, string> {
-  if (!raw.trim()) return {};
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      console.error("credential map must be a JSON object — ignoring");
-      return {};
-    }
-    const map: Record<string, string> = {};
-    for (const [k, v] of Object.entries(parsed)) {
-      if (typeof v === "string" && k && v) map[k] = v;
-    }
-    return map;
-  } catch {
-    console.error("credential map is not valid JSON — ignoring");
-    return {};
-  }
-}

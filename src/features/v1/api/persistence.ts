@@ -63,14 +63,24 @@ export async function saveReportState(kv: KvStore, state: ReportState): Promise<
 }
 
 export async function loadZReports(kv: KvStore): Promise<ZReportRecord[]> {
-  const seqs = (await kv.getJSON<number[]>(ZREPORTS_INDEX_KEY)) ?? [];
+  const seqs = [...new Set((await kv.getJSON<number[]>(ZREPORTS_INDEX_KEY)) ?? [])];
   const items = await Promise.all(seqs.map((seq) => kv.getJSON<ZReportRecord>(`v1-zreports:item:${seq}`)));
-  return items.filter((record): record is ZReportRecord => record != null);
+  return items
+    .filter((record): record is ZReportRecord => record != null)
+    // Pre-feature records persisted before on-chain publish lacked a state.
+    .map((record) => ({ ...record, publishState: record.publishState ?? "pending" }));
 }
 
+/**
+ * Write (or overwrite by seq) a Z report and index its seq. Idempotent: a
+ * re-persist of the same seq — e.g. to flip `publishState` after an on-chain
+ * publish — rewrites the item without duplicating the index entry.
+ */
 export async function appendZReport(kv: KvStore, record: ZReportRecord): Promise<void> {
   await kv.setJSON(`v1-zreports:item:${record.seq}`, record);
   const seqs = (await kv.getJSON<number[]>(ZREPORTS_INDEX_KEY)) ?? [];
-  seqs.push(record.seq);
-  await kv.setJSON(ZREPORTS_INDEX_KEY, seqs);
+  if (!seqs.includes(record.seq)) {
+    seqs.push(record.seq);
+    await kv.setJSON(ZREPORTS_INDEX_KEY, seqs);
+  }
 }

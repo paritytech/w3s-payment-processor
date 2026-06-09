@@ -50,8 +50,15 @@ _load_env() {
   [[ -f "$file" ]] || return 0
   while IFS='=' read -r key val; do
     # skip blank lines and comments
+    key="${key#"${key%%[![:space:]]*}"}"   # ltrim
+    key="${key%"${key##*[![:space:]]}"}"   # rtrim
     [[ -z "$key" || "$key" == \#* ]] && continue
-    # strip optional surrounding quotes
+    # ignore non-identifier keys (must start with letter/underscore)
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    # strip trailing CR (Windows-edited files) + outer whitespace + outer quotes
+    val="${val%$'\r'}"
+    val="${val#"${val%%[![:space:]]*}"}"
+    val="${val%"${val##*[![:space:]]}"}"
     val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
     if [[ "$force" == "1" || -z "${!key:-}" ]]; then
       export "$key=$val"
@@ -190,6 +197,19 @@ fi
 
 export MNEMONIC="$RAW_MNEMONIC"
 export DOTNS_MNEMONIC="$RAW_MNEMONIC"
+
+# Resolve VITE_W3SPAY_REGISTRY_ADDRESS so it's logged + baked deterministically.
+# Empty here is allowed (src/config.ts carries the network default); the
+# `validate-config` preflight surfaces it as a warning. When set, sanity-check
+# the H160 shape so a malformed value never silently ships.
+VITE_W3SPAY_REGISTRY_ADDRESS="${VITE_W3SPAY_REGISTRY_ADDRESS:-}"
+if [[ -n "$VITE_W3SPAY_REGISTRY_ADDRESS" ]]; then
+  if [[ ! "$VITE_W3SPAY_REGISTRY_ADDRESS" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+    echo "Error: VITE_W3SPAY_REGISTRY_ADDRESS=\"$VITE_W3SPAY_REGISTRY_ADDRESS\" is not a 0x-prefixed 20-byte H160." >&2
+    exit 1
+  fi
+  export VITE_W3SPAY_REGISTRY_ADDRESS
+fi
 export VITE_NETWORK="${VITE_NETWORK:-$BULLETIN_ENV}"
 
 case "$VITE_NETWORK" in
@@ -205,11 +225,26 @@ if [[ "$VITE_NETWORK" != "$BULLETIN_ENV" ]]; then
   exit 1
 fi
 
+# Echo every VITE_* var the build will see — these get baked into the SPA.
+# `npm run build` inherits the script's environment and Vite picks up
+# `process.env.VITE_*` ahead of any matching `.env`/`.env.local` entry, so
+# what you see here is what ships.
+echo "==> VITE_* env baked into this build:"
+_logged=0
+while IFS= read -r _name; do
+  [[ -n "$_name" ]] || continue
+  _logged=1
+  printf '    %s=%s\n' "$_name" "${!_name}"
+done < <(compgen -v | grep -E '^VITE_' | sort)
+if [[ "$_logged" == "0" ]]; then
+  echo "    (none — every VITE_* var resolves to its src/config.ts default)"
+fi
+
 # Static config preflight. Validates ONLY the build-time chain/token/host env
 # wiring in src/config.ts — NOT merchant PEMs. The per-merchant credential
 # bundle is never bundled into the SPA: it is fetched + AES-GCM-decrypted at
-# unlock time. Provision / re-check that encrypted bundle separately with
-# `npm run upload-credentials -- --dry-run`.
+# unlock time. Per-merchant configs are published from the w3spay-admin app
+# (encrypted, on Bulletin, CID recorded on the registry) — nothing to provision here.
 CONFIG_FILE="$SCRIPT_DIR/src/config.ts"
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "Error: $CONFIG_FILE is required (the static chain/token/host config)."

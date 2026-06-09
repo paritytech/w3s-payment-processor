@@ -53,10 +53,10 @@ export interface ProcessorEnvConfig {
   protocols: ProtocolEnablement;
   debug: { enabled: boolean; openByDefault: boolean };
   /**
-   * IPFS gateway used to resolve `ipfs://<cid>` entries in `credentialMap`.
-   * The map itself is public; only the encrypted bundle content requires a passkey.
+   * IPFS gateway used to resolve `ipfs://<cid>` envelope CIDs, and the on-chain
+   * registry address the processor reads each group's config CID from at unlock.
    */
-  remoteCredentials: { ipfsGateway: string };
+  remoteCredentials: { ipfsGateway: string; registryAddress: string };
 }
 
 export interface TelemetryConfig {

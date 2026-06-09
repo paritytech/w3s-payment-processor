@@ -3,7 +3,7 @@
 
 /**
  * v1 terminal resolution. Local mode synthesizes terminals from config; remote
- * mode reads the on-chain `W3SPayMerchantRegistry` and filters by `groupId`
+ * mode reads the on-chain `W3SPayRegistry` and filters by `groupId`
  * (which maps to the registry's `merchantId` — the registry has no separate
  * group field). Revoked terminals are dropped; active + paused are watched.
  */
@@ -12,7 +12,7 @@ import type { PolkadotClient } from "polkadot-api";
 
 import { readContract } from "@/shared/api/contracts/read.ts";
 import { accountId32ToSs58, type AccountId32Hex } from "@/shared/utils/address.ts";
-import { W3SPayMerchantRegistryABI } from "@/features/v1/api/registry-abi.ts";
+import { W3SPayRegistryABI } from "@/features/v1/api/registry-abi.ts";
 import type { ResolvedV1Mode } from "@/config.ts"
 import type { TerminalStatus, V1Terminal } from "@/features/v1/types.ts";
 
@@ -36,7 +36,7 @@ export async function listTerminalsForGroup(
 ): Promise<V1Terminal[]> {
   const keys = await readContract<readonly `0x${string}`[]>(client, {
     address: registryAddress,
-    abi: W3SPayMerchantRegistryABI,
+    abi: W3SPayRegistryABI,
     functionName: "getAllTerminalKeys",
     origin,
     at: "best",
@@ -46,7 +46,7 @@ export async function listTerminalsForGroup(
     keys.map(async (key): Promise<V1Terminal | null> => {
       const [entry] = await readContract<[RawMerchantEntry]>(client, {
         address: registryAddress,
-        abi: W3SPayMerchantRegistryABI,
+        abi: W3SPayRegistryABI,
         functionName: "getMerchantByKey",
         args: [key],
         origin,

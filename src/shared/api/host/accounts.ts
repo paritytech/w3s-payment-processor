@@ -10,6 +10,8 @@
 import { connectToHost, isInHost } from "@/shared/api/host/connection.ts";
 import { createAccountsProvider, sandboxTransport } from "@/shared/api/host/host-api.ts";
 import type { AccountConnectionStatus, Subscription } from "@/shared/api/host/host-api.ts";
+import { AccountId } from "@polkadot-api/substrate-bindings";
+import type { PolkadotSigner } from "polkadot-api";
 
 export type HostProductAccountStatusKind =
   | "standalone"
@@ -139,4 +141,32 @@ export function subscribeHostAccountConnectionStatus(
   if (!isInHost()) return null;
   const accounts = createAccountsProvider(sandboxTransport);
   return accounts.subscribeAccountConnectionStatus(callback);
+}
+
+const SS58_PREFIX = 42;
+
+export interface ProductAccountSigner {
+  readonly signer: PolkadotSigner;
+  /** SS58 (prefix 42) — the dry-run origin + account-mapping key for contract writes. */
+  readonly walletAddress: string;
+}
+
+/**
+ * Build a host-backed `PolkadotSigner` for the product account plus its SS58
+ * address, for the processor's only on-chain write (Z reports). The host signs
+ * each payload via the accounts provider — mirrors the admin wallet's
+ * build-signer step. MUST be called in the authed tree (post host sign-in),
+ * where the product-account public key is already resolved.
+ */
+export function getProductAccountSigner(
+  dotNsIdentifier: string,
+  derivationIndex: number,
+  publicKey: Uint8Array,
+): ProductAccountSigner {
+  const accounts = createAccountsProvider(sandboxTransport);
+  const signer = accounts.getProductAccountSigner(
+    { dotNsIdentifier, derivationIndex, publicKey },
+    "createTransaction",
+  );
+  return { signer, walletAddress: AccountId(SS58_PREFIX).dec(publicKey) };
 }

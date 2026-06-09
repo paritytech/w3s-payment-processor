@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // @paritytech
 
-import type { TerminalStatus } from "@/features/v1/types.ts";
+import type { TerminalStatus, ZReportPublishState } from "@/features/v1/types.ts";
 
 export interface StreamTerminal {
   id: string;
@@ -62,4 +62,6 @@ export interface ZHistoryEntry {
   total: number;
   count: number;
   perTill: Map<string, number>;
+  publishState: ZReportPublishState;
+  cid?: string;
 }

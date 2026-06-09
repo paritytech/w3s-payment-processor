@@ -7,7 +7,7 @@
  * throws on unknown keys so a misconfigured deploy fails loudly at boot.
  *
  * - `mainChain` — Asset Hub-like parachain where the pallet-revive
- *   `W3SPayMerchantRegistry` lives (v1 remote registry reads).
+ *   `W3SPayRegistry` lives (v1 remote registry reads).
  * - `peopleChain` — People-system parachain where the W3T/CASH foreign asset
  *   lives (`pallet-assets`): the v1 `Assets.Transferred` watch + balance reads.
  *

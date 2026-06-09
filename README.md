@@ -20,17 +20,14 @@ npm run deploy                    # builds and publishes the configured .dot pro
 
 `deploy.sh` requires a deployment mnemonic from `MNEMONIC` or `DOTNS_MNEMONIC`, and it requires `VITE_NETWORK` to match `BULLETIN_ENV`.
 
-### Provision remote merchant credentials
+### Per-merchant config
 
-```bash
-# Validate + encrypt + CID + decrypt self-check; no chain writes.
-REMOTE_CREDENTIALS_PASSKEY=... npm run upload-credentials -- --dry-run
-
-# Real upload; needs an authorized Bulletin account.
-REMOTE_CREDENTIALS_PASSKEY=... MNEMONIC=... npm run upload-credentials
-```
-
-The upload script reads `.credentials/remote-credentials.local.json` by default, writes a receipt to `.credentials/remote-credentials.receipt.json`, and prints the `VITE_CREDENTIAL_MAP` entry to add to the deployed environment.
+Per-merchant config (group profile + v1/v2 terminals incl. PEM) is published
+from the **w3spay-admin** app: the operator fills it out, it is AES-encrypted
+with a group passkey, uploaded to Bulletin via the host, and its CID recorded
+on the W3SPay registry contract. This app reads that CID by `groupId` at unlock
+— set `VITE_W3SPAY_REGISTRY_ADDRESS` to the deployed registry (defaulted in
+`src/config.ts`).
 
 ### Frontend (local dev)
 

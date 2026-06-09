@@ -88,6 +88,18 @@ export function Reports({ stream, mobile }: { stream: PaymentStream; mobile: boo
 
 function ZRow({ z, stream }: { z: ZHistoryEntry; stream: PaymentStream }) {
   const [open, setOpen] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const badge = PUBLISH_BADGE[z.publishState];
+
+  const onPublish = async () => {
+    setPublishing(true);
+    try {
+      await stream.publishReport(z.seq);
+    } finally {
+      setPublishing(false);
+    }
+  };
+
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-md)", background: "var(--surface)", overflow: "hidden" }}>
       <button
@@ -99,6 +111,7 @@ function ZRow({ z, stream }: { z: ZHistoryEntry; stream: PaymentStream }) {
           <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--text-1)" }}>Closed {fmtDayTime(z.closedAtMs)}</div>
           <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>{fmtInt(z.count)} payments</div>
         </div>
+        <span style={{ fontSize: 10, fontWeight: 700, color: badge.color, background: badge.bg, borderRadius: 6, padding: "3px 7px", flex: "0 0 auto", letterSpacing: "0.03em", textTransform: "uppercase" }}>{badge.label}</span>
         <Money value={z.total} size="sm" />
         <Icon name="chevronDown" size={16} stroke={2} style={{ color: "var(--muted)", transform: open ? "rotate(180deg)" : "none", transition: "transform .18s" }} />
       </button>
@@ -111,8 +124,30 @@ function ZRow({ z, stream }: { z: ZHistoryEntry; stream: PaymentStream }) {
               <Money value={z.perTill.get(t.id) ?? 0} size="sm" />
             </div>
           ))}
+          <div style={{ marginTop: 14, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <DisplayIf condition={z.publishState === "published" && z.cid != null}>
+              <span style={{ fontSize: 11, color: "var(--muted)", fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>CID {z.cid}</span>
+            </DisplayIf>
+            <DisplayIf condition={z.publishState !== "published"}>
+              <Btn onClick={onPublish} disabled={publishing} kind="primary" size="sm">
+                {publishing ? "Publishing…" : z.publishState === "conflict" ? "Retry publish" : "Publish to chain"}
+              </Btn>
+            </DisplayIf>
+          </div>
+          <DisplayIf condition={z.publishState === "conflict"}>
+            <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--red)", lineHeight: 1.5 }}>
+              On-chain CID for this report doesn't match — another writer claimed the slot. The encrypted
+              report stays unreadable to them; retry to confirm.
+            </div>
+          </DisplayIf>
         </div>
       </DisplayIf>
     </div>
   );
 }
+
+const PUBLISH_BADGE: Record<ZHistoryEntry["publishState"], { label: string; color: string; bg: string }> = {
+  pending: { label: "Pending", color: "var(--muted)", bg: "var(--surface-3)" },
+  published: { label: "Published", color: "var(--green-fg)", bg: "var(--green-bg)" },
+  conflict: { label: "Conflict", color: "var(--red)", bg: "rgba(239,68,68,0.12)" },
+};

@@ -14,6 +14,7 @@ export {
   createPaymentManager,
   createStatementStore,
   hostLocalStorage,
+  preimageManager,
   requestPermission,
   sandboxProvider,
   sandboxTransport,

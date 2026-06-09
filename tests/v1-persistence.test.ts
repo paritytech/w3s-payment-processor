@@ -47,6 +47,7 @@ describe("v1 persistence — durability across a simulated reload", () => {
       count: 2,
       committedAtMs: 123,
       source: "v1",
+      publishState: "pending",
     };
     await appendZReport(before, zReport);
 

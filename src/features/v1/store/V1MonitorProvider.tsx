@@ -46,6 +46,7 @@ export function useV1Monitor() {
   return {
     ...state,
     commitZReport: handle?.commitZReport ?? (async () => {}),
+    publishZReport: handle?.publishZReport ?? (async () => {}),
     toggleReconcile: handle?.toggleReconcile ?? (async () => {}),
   };
 }
