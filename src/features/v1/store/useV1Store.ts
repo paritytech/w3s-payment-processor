@@ -31,6 +31,8 @@ export interface V1MonitorState {
   balancesUpdatedAt: number;
   reportState: ReportState;
   zReports: ZReportRecord[];
+
+  fiscalHydrated: boolean;
   /** Highest block scanned in the live tail (best-chain head). */
   finalizedBlock: number;
   /** Highest FINALIZED block seen — payments at/below this are confirmed (final). */
@@ -56,6 +58,7 @@ export const useV1Store = create<V1MonitorState>(() => ({
   balancesUpdatedAt: 0,
   reportState: { periodStartBlock: 0, lastZSeq: 0 },
   zReports: [],
+  fiscalHydrated: false,
   finalizedBlock: 0,
   confirmedBlock: 0,
   catchupProgress: null,

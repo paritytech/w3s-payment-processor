@@ -61,6 +61,15 @@ export interface ReportLine {
   count: number;
 }
 
+export interface ReportPayment {
+  paymentId: string;
+  terminalId: string;
+  amountPlanck: string;
+  blockNumber?: number;
+  observedAtMs: number;
+  fromHex?: string;
+}
+
 /** A point-in-time rollup over a block-number period. X reports are interim. */
 export interface ReportSnapshot {
   fromBlock: number;
@@ -68,19 +77,23 @@ export interface ReportSnapshot {
   lines: ReportLine[];
   grandTotalPlanck: string;
   count: number;
+  /** RFC-6 line items sorted by blockNumber then paymentId, then coin payments by firstSeen. */
+  payments: ReportPayment[];
 }
 
 export type ZReportPublishState = "pending" | "published" | "conflict";
 
-/** A committed Z report — the RFC6 fiscal close for a period. */
+/** A committed Z report — the fiscal close for a period, across both payment rails. */
 export interface ZReportRecord extends ReportSnapshot {
   seq: number;
   committedAtMs: number;
-  source: "v1";
+  /** Which rails recorded payments in the period. */
+  source: "v1" | "v2" | "mixed";
   /** On-chain publish lifecycle for this report's encrypted CID. */
   publishState: ZReportPublishState;
   /** Bulletin CID of the published encrypted report, set once `published`. */
   cid?: string;
+  lastAttemptCid?: string;
 }
 
 export interface ReportState {

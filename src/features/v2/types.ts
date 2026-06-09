@@ -6,6 +6,8 @@ export type ClaimStatus = "claimed" | "claim_blocked" | "claim_failed" | "pendin
 export interface ClaimResult {
   status: ClaimStatus;
   diagnostic?: string;
+  /** How many topUp attempts this claim cycle made (absent for blocked claims). */
+  attempts?: number;
 }
 
 /**
@@ -24,6 +26,8 @@ export interface PaymentRecord {
   firstSeenAtMs: number;
   claimStatus: ClaimStatus;
   claimDiagnostic?: string;
+  /** Cumulative topUp attempts across all deliveries of this payment. */
+  claimAttempts?: number;
   claimedAtMs?: number;
   source: "v2";
 }

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { p256 } from "@noble/curves/nist.js";
 
 import { ingestStatement, indexTerminalsByTopic, type StatementLike } from "@/features/v2/api/orchestrator.ts";
-import { createCoinsClaimEngine, createDisabledClaimEngine } from "@/features/v2/api/claim-engine.ts";
+import { createCoinsClaimEngine, createDisabledClaimEngine, type ClaimEngine } from "@/features/v2/api/claim-engine.ts";
 import type { PaymentRecord } from "@/features/v2/types.ts";
 import type { ResolvedV2Terminal } from "@/config.ts"
 import { hexToBytes } from "@noble/hashes/utils.js";
@@ -352,5 +352,47 @@ describe("ingestStatement — coin secret length contract (regression)", () => {
     expect(onDecodeFailure).toHaveBeenCalledWith(terminal.topicHex, expect.any(String));
     expect(topUp).not.toHaveBeenCalled();
     expect(persisted).toHaveLength(0);
+  });
+});
+
+describe("ingestStatement — retry accounting", () => {
+  it("accumulates topUp attempts across re-deliveries and says so in the record", async () => {
+    const terminal = makeTerminal(TOPIC_HEX, "t1");
+    const records = new Map<string, PaymentRecord>();
+    const deps = (claimEngine: ClaimEngine) => ({
+      terminalsByTopic: indexTerminalsByTopic([terminal]),
+      claimEngine,
+      binding: { claimsEnabled: true, boundTerminalIds: new Set(["t1"]) },
+      tokenDecimals: 6,
+      records,
+      inflight: new Set<string>(),
+      sessionStartMs: 0,
+      persist: async () => {},
+    });
+    const statement: StatementLike = { topics: [terminal.topic], data: envelopeFor(terminal, payload) };
+
+    // First delivery: the host stays down — 3 attempts, then a failed record.
+    const failing = createCoinsClaimEngine(
+      {
+        topUp: async () => {
+          throw new Error("host busy");
+        },
+      },
+      { retryDelayMs: 0 },
+    );
+    const first = await ingestStatement(statement, deps(failing));
+    expect(first).toMatchObject({ claimStatus: "claim_failed", claimAttempts: 3 });
+    expect(first!.claimDiagnostic).toBe("failed after 3 attempts — host busy");
+
+    // Gossip re-delivers; still down — the record now says 6 tries in total.
+    const second = await ingestStatement(statement, deps(failing));
+    expect(second).toMatchObject({ claimStatus: "claim_failed", claimAttempts: 6 });
+    expect(second!.claimDiagnostic).toBe("failed after 6 attempts — host busy");
+
+    // Host recovers on the next re-delivery: claimed, history preserved.
+    const recovered = createCoinsClaimEngine({ topUp: async () => undefined });
+    const third = await ingestStatement(statement, deps(recovered));
+    expect(third).toMatchObject({ claimStatus: "claimed", claimAttempts: 7 });
+    expect(third!.claimDiagnostic).toBeUndefined();
   });
 });

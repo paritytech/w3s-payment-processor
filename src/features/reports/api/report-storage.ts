@@ -1,16 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // @paritytech
 
-/**
- * On-chain Z-report publish. Encrypts a committed `ZReportRecord` with the
- * group passkey (the SAME AES credential envelope the config bundle uses — the
- * literal "same password"), uploads the ciphertext to Bulletin via the host
- * preimage submitter, records its CID on the registry (`addProcessorReport`),
- * then reads the slot back to confirm OUR cid won.
- *
- * Runs in the AUTHED tree (post host sign-in): the host is signed in, so the
- * host-wrapped `mainChainClient()` is the correct write + read-back client.
- */
+
 import type { PolkadotSigner } from "polkadot-api";
 
 import { envConfig } from "@/config.ts";
@@ -22,6 +13,7 @@ import { readContract } from "@/shared/api/contracts/read.ts";
 import type { TxStatus } from "@/shared/api/contracts/watch-transaction.ts";
 import { W3SPayRegistryABI } from "@/features/v1/api/registry-abi.ts";
 import { encryptCredentialEnvelope } from "@/shared/utils/wire/credential-envelope.ts";
+import { buildReportDoc } from "@/features/reports/api/report-doc.ts";
 import {
   BLAKE2B_256_LENGTH,
   calculateBulletinCidObject,
@@ -43,11 +35,11 @@ export interface PreimageSubmitter {
 export interface PublishZReportOptions {
   readonly groupId: string;
   readonly record: ZReportRecord;
-  /** The unlock passkey — reused to AES-encrypt the report. */
   readonly passkey: string;
   readonly signer: PolkadotSigner;
-  /** SS58 product-account address — dry-run origin + account-mapping key. */
   readonly walletAddress: string;
+  readonly lastAttemptCid?: string;
+  readonly onPreimageUploaded?: (cid: string) => void | Promise<void>;
   readonly preimage?: PreimageSubmitter;
   readonly inHost?: () => boolean;
   readonly onStatus?: (status: TxStatus) => void;
@@ -76,11 +68,49 @@ export async function publishZReport(opts: PublishZReportOptions): Promise<Publi
     );
   }
 
-  const plaintext = new TextEncoder().encode(JSON.stringify(opts.record));
+  const doc = buildReportDoc({
+    kind: "z",
+    groupId: opts.groupId,
+    snapshot: opts.record,
+    seq: opts.record.seq,
+    generatedAtMs: opts.record.committedAtMs,
+  });
+  const plaintext = new TextEncoder().encode(JSON.stringify(doc));
   const envelope = await encryptCredentialEnvelope(plaintext, opts.passkey);
-  // These exact bytes are uploaded and CID'd — the JSON of the envelope object.
+
   const bytes = new TextEncoder().encode(JSON.stringify(envelope));
   const cidObj = calculateBulletinCidObject(bytes);
+  const uploadedCid = cidObj.toString();
+
+  const registryAddress = envConfig.remoteCredentials.registryAddress.toLowerCase() as `0x${string}`;
+  const client = mainChainClient();
+  const readSlot = async (): Promise<RawProcessorReportRecord> => {
+    const [onChain] = await readContract<[RawProcessorReportRecord]>(client, {
+      address: registryAddress,
+      abi: W3SPayRegistryABI,
+      functionName: "getProcessorReport",
+      args: [opts.groupId, BigInt(opts.record.seq)],
+      origin: envConfig.readOnlyOrigin,
+      at: "best",
+    });
+    return onChain;
+  };
+
+  try {
+    const existing = await readSlot();
+    if (existing.exists) {
+      if (existing.cid === uploadedCid || (opts.lastAttemptCid != null && existing.cid === opts.lastAttemptCid)) {
+        return { cid: existing.cid, size: existing.size };
+      }
+      throw new ReportConflictError(
+        `report seq ${opts.record.seq}: on-chain slot already holds ${existing.cid}, ` +
+          `which is not this device's previous upload`,
+      );
+    }
+  } catch (caught) {
+    if (caught instanceof ReportConflictError) throw caught;
+    console.warn("[reports] publish pre-check read failed (continuing to write)", caught);
+  }
 
   const submitter = opts.preimage ?? preimageManager;
   let preimageKey: `0x${string}`;
@@ -101,11 +131,9 @@ export async function publishZReport(opts: PublishZReportOptions): Promise<Publi
     );
   }
 
-  const uploadedCid = cidObj.toString();
-  const size = bytes.length;
-  const registryAddress = envConfig.remoteCredentials.registryAddress.toLowerCase() as `0x${string}`;
-  const client = mainChainClient();
+  await opts.onPreimageUploaded?.(uploadedCid);
 
+  const size = bytes.length;
   await writeContract(client, {
     address: registryAddress,
     abi: W3SPayRegistryABI,
@@ -114,19 +142,17 @@ export async function publishZReport(opts: PublishZReportOptions): Promise<Publi
     signer: opts.signer,
     walletAddress: opts.walletAddress,
     onStatus: opts.onStatus,
+
+    waitForChainEffect: async () => {
+      const slot = await readSlot();
+      return slot.exists && slot.cid === uploadedCid;
+    },
   });
 
   // Read-back guard: confirm our cid won the (groupId, seq) slot. A pre-emptive
   // write with a different cid surfaces here as a conflict (records are
   // immutable; an identical-cid retry is a contract-side no-op and matches).
-  const [onChain] = await readContract<[RawProcessorReportRecord]>(client, {
-    address: registryAddress,
-    abi: W3SPayRegistryABI,
-    functionName: "getProcessorReport",
-    args: [opts.groupId, BigInt(opts.record.seq)],
-    origin: envConfig.readOnlyOrigin,
-    at: "best",
-  });
+  const onChain = await readSlot();
   if (!onChain.exists || onChain.cid !== uploadedCid) {
     throw new ReportConflictError(
       `report seq ${opts.record.seq}: on-chain cid ${onChain.cid || "(none)"} ` +

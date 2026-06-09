@@ -7,7 +7,7 @@
  * scoped by the KvStore (`w3s-payment-processor:`).
  */
 import type { KvStore } from "@/shared/utils/kv-store.ts";
-import type { PaymentEvent, ReportState, ZReportRecord } from "@/features/v1/types.ts";
+import type { PaymentEvent, ReportPayment, ReportState, ZReportRecord } from "@/features/v1/types.ts";
 
 const TXLOG_INDEX_KEY = "v1-txlog:index";
 const CHECKPOINT_KEY = "v1-checkpoint";
@@ -65,10 +65,54 @@ export async function saveReportState(kv: KvStore, state: ReportState): Promise<
 export async function loadZReports(kv: KvStore): Promise<ZReportRecord[]> {
   const seqs = [...new Set((await kv.getJSON<number[]>(ZREPORTS_INDEX_KEY)) ?? [])];
   const items = await Promise.all(seqs.map((seq) => kv.getJSON<ZReportRecord>(`v1-zreports:item:${seq}`)));
-  return items
+  const records = items
     .filter((record): record is ZReportRecord => record != null)
     // Pre-feature records persisted before on-chain publish lacked a state.
     .map((record) => ({ ...record, publishState: record.publishState ?? "pending" }));
+
+  const txLog = records.some((record) => record.payments == null && record.count > 0)
+    ? await loadTxLog(kv)
+    : [];
+
+  return records.map((record) => ({
+    ...record,
+    payments: record.payments ?? reconstructPayments(record, txLog),
+  }));
+}
+
+function reconstructPayments(record: ZReportRecord, txLog: readonly PaymentEvent[]): ReportPayment[] {
+  if (record.count === 0) return [];
+  const upper = record.toBlock >= record.fromBlock ? record.toBlock : Number.POSITIVE_INFINITY;
+  const candidates = txLog
+    .filter((event) => event.blockNumber >= record.fromBlock && event.blockNumber <= upper)
+    .sort((a, b) => a.blockNumber - b.blockNumber || (a.paymentId < b.paymentId ? -1 : 1))
+    .slice(0, record.count);
+  if (candidates.length !== record.count) return [];
+  let total = 0n;
+  for (const event of candidates) total += BigInt(event.amountPlanck);
+  if (total.toString() !== record.grandTotalPlanck) return [];
+  return candidates.map((event) => ({
+    paymentId: event.paymentId,
+    terminalId: event.terminalId,
+    amountPlanck: event.amountPlanck,
+    blockNumber: event.blockNumber,
+    observedAtMs: event.observedAtMs,
+    ...(event.fromHex !== undefined ? { fromHex: event.fromHex } : {}),
+  }));
+}
+
+export function clampPeriodStart(state: ReportState, zReports: readonly ZReportRecord[]): ReportState {
+  let highestSwept = 0;
+  for (const z of zReports) {
+    if (z.toBlock >= z.fromBlock && z.toBlock > highestSwept) highestSwept = z.toBlock;
+    for (const payment of z.payments) {
+      if (payment.blockNumber != null && payment.blockNumber > highestSwept) {
+        highestSwept = payment.blockNumber;
+      }
+    }
+  }
+  if (highestSwept === 0 || state.periodStartBlock > highestSwept) return state;
+  return { ...state, periodStartBlock: highestSwept + 1 };
 }
 
 /**

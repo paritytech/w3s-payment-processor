@@ -7,14 +7,19 @@ import { envConfig } from "@/config.ts";
 import { useProcessorConfig } from "@/shared/store/useProcessorConfig.tsx";
 import { useV1Monitor } from "@/features/v1/store/V1MonitorProvider.tsx";
 import { useV2Monitor } from "@/features/v2/store/V2MonitorProvider.tsx";
+import { buildCombinedSnapshot, fiscalPeriodStartMs, performCloseOut } from "@/features/reports/api/close-out.ts";
+import { createZReportPublisher } from "@/features/reports/api/zreport-publisher.ts";
+import { resolveKvStore } from "@/shared/utils/kv-store.ts";
+import { buildReportDoc, downloadReportDocCsv } from "@/features/reports/api/report-doc.ts";
+import { loadSavedCreds } from "@/app/unlock-creds.ts";
 import { fmtTime, toToken } from "@/shared/utils/ui-format.ts";
 import type { ConnState } from "@/shared/components/indicators.tsx";
 import type { Tone } from "@/shared/utils/tone.ts";
-import type { HostAccountUiState } from "@/features/v2/store/useV2Store.ts";
+import type { HostAccountUiState, V2Status } from "@/features/v2/store/useV2Store.ts";
 import type { V1CatchupProgress } from "@/features/v1/store/useV1Store.ts";
 import type { ClaimStatus } from "@/features/v2/types.ts";
 
-import type { PaymentLifecycle, StreamPayment, StreamTerminal, StreamTotals, TerminalTotal, ZHistoryEntry } from "@/features/dashboard/types.ts";
+import type { PaymentLifecycle, StreamPayment, StreamTerminal, StreamTotals, TerminalTotal, XReportStamp, ZHistoryEntry } from "@/features/dashboard/types.ts";
 
 /**
  * v1 lifecycle from block depth: confirmed once finalized, detected at the very
@@ -31,6 +36,32 @@ function v2Lifecycle(claimStatus: ClaimStatus): PaymentLifecycle {
   if (claimStatus === "claimed") return "confirmed";
   if (claimStatus === "pending") return "finalizing";
   return "failed";
+}
+
+
+export function closeOutBlocker(args: {
+  v1Enabled: boolean;
+  v2Enabled: boolean;
+  engineReady: boolean;
+  finalizedBlock: number;
+  fiscalHydrated: boolean;
+  v2Status: V2Status;
+}): string | null {
+  if (!args.fiscalHydrated) {
+    return "Saved reports are still loading — try again in a moment.";
+  }
+  if (args.v1Enabled) {
+    if (!args.engineReady) {
+      return "The payment monitor is still starting — try again once it's live.";
+    }
+    if (args.finalizedBlock === 0) {
+      return "No blocks scanned yet this session — wait for the chain watch before closing out.";
+    }
+  }
+  if (args.v2Enabled && args.v2Status !== "running") {
+    return "The coin-payment monitor is still starting — try again once it's live.";
+  }
+  return null;
 }
 
 export interface StreamToast {
@@ -63,6 +94,14 @@ export interface PaymentStream {
   checkAll: () => void;
   closeOut: () => void;
   publishReport: (seq: number) => Promise<void>;
+  /** Recompute the fiscal X (open v1 period) and stamp it on the panel. */
+  updateXReport: () => void;
+  /** Last "Update" stamp; null until pressed, cleared on close-out. */
+  xStamp: XReportStamp | null;
+  /** Save the X period's payments as a CSV line-item export. */
+  exportXReportCsv: () => void;
+  /** Save committed Z report `seq`'s payments as a CSV line-item export. */
+  downloadReportCsv: (seq: number) => void;
 }
 
 export function usePaymentStream(): PaymentStream {
@@ -72,6 +111,8 @@ export function usePaymentStream(): PaymentStream {
   const decimals = envConfig.token.decimals;
 
   const [toast, setToast] = useState<StreamToast | null>(null);
+  // Fiscal X stamp from the last "Update" press; cleared when a Z closes the period.
+  const [xStamp, setXStamp] = useState<XReportStamp | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const flash = useCallback((msg: string, t: Tone = "neutral") => {
     setToast({ msg, tone: t });
@@ -98,6 +139,8 @@ export function usePaymentStream(): PaymentStream {
   const periodStartBlock = v1.reportState.periodStartBlock;
   const scannedBlock = v1.finalizedBlock;
   const confirmedBlock = v1.confirmedBlock;
+
+  const periodStartMs = useMemo(() => fiscalPeriodStartMs(v1.zReports), [v1.zReports]);
   const payments = useMemo<StreamPayment[]>(() => {
     const out: StreamPayment[] = [];
     for (const e of v1.events) {
@@ -118,6 +161,7 @@ export function usePaymentStream(): PaymentStream {
       });
     }
     for (const r of v2.records) {
+      if (r.firstSeenAtMs <= periodStartMs) continue; // closed by a previous Z
       out.push({
         id: `v2:${r.id}`,
         terminalId: r.terminalId,
@@ -135,7 +179,7 @@ export function usePaymentStream(): PaymentStream {
     }
     out.sort((a, b) => b.tsMs - a.tsMs);
     return out;
-  }, [v1.events, v2.records, periodStartBlock, decimals, scannedBlock, confirmedBlock]);
+  }, [v1.events, v2.records, periodStartBlock, periodStartMs, decimals, scannedBlock, confirmedBlock]);
 
   const totals = useMemo<StreamTotals>(() => {
     const perTill = new Map<string, TerminalTotal>();
@@ -169,6 +213,13 @@ export function usePaymentStream(): PaymentStream {
           perTill: new Map(z.lines.map((l) => [l.terminalId, toToken(l.totalPlanck, decimals)])),
           publishState: z.publishState,
           cid: z.cid,
+          payments: z.payments.map((p) => ({
+            id: p.paymentId,
+            tsMs: p.observedAtMs,
+            terminalId: p.terminalId,
+            amount: toToken(p.amountPlanck, decimals),
+            ...(p.blockNumber != null ? { blockNumber: p.blockNumber } : {}),
+          })),
         }))
         .sort((a, b) => b.seq - a.seq),
     [v1.zReports, decimals],
@@ -205,17 +256,98 @@ export function usePaymentStream(): PaymentStream {
     void Promise.all(ids.map((pid) => v1.toggleReconcile(pid))).then(() => flash("All payments checked off", "green"));
   }, [payments, v1, flash]);
 
+  // One publisher instance backs both the post-close auto-publish and the
+  // manual row button (it was engine-owned before close-out went rail-neutral).
+  const publishZ = useMemo(() => createZReportPublisher(resolveKvStore()), []);
+
   const closeOut = useCallback(() => {
-    void v1.commitZReport().then(() => flash("Day closed out — new period started", "green"));
-  }, [v1, flash]);
+    const blocker = closeOutBlocker({
+      v1Enabled: config.v1.enabled,
+      v2Enabled: config.v2.enabled,
+      engineReady: v1.engineReady,
+      finalizedBlock: v1.finalizedBlock,
+      fiscalHydrated: v1.fiscalHydrated,
+      v2Status: v2.status,
+    });
+    if (blocker != null) {
+      flash(blocker, "red");
+      return;
+    }
+    performCloseOut(config.v2.terminals).then(
+      (record) => {
+        setXStamp(null); // the stamp described the period that just closed
+        flash("Day closed out — new period started", "green");
+        // Best-effort auto-publish (previously the engine's job on commit);
+        // a failure leaves the row `pending` for the manual publish button.
+        void publishZ(record.seq).catch((error) => {
+          console.warn(`[reports] auto-publish seq ${record.seq} failed`, error);
+          flash(
+            `Closed out, but publishing report Z·${String(record.seq).padStart(4, "0")} failed — ` +
+              "use Publish on the report row to retry.",
+            "red",
+          );
+        });
+      },
+      (error) => flash(error instanceof Error ? error.message : "Close out failed", "red"),
+    );
+  }, [config.v1.enabled, config.v2.enabled, config.v2.terminals, v1, v2.status, flash, publishZ]);
 
   const publishReport = useCallback(
     (seq: number): Promise<void> =>
-      v1.publishZReport(seq).then(
+      publishZ(seq).then(
         () => flash(`Report Z·${String(seq).padStart(4, "0")} published on-chain`, "green"),
         (error) => flash(error instanceof Error ? error.message : "Publish failed", "red"),
       ),
-    [v1, flash],
+    [publishZ, flash],
+  );
+
+  // The X view = the open fiscal period across BOTH rails — exactly what the
+  // next Z will close: RFC-6 credits by block window, coin payments since
+  // the last Z's commit time.
+  const buildXSnapshot = useCallback(
+    () =>
+      buildCombinedSnapshot({
+        v1Events: v1.events,
+        periodStartBlock: v1.reportState.periodStartBlock,
+        finalizedBlock: v1.finalizedBlock,
+        v1Terminals: v1.terminals,
+        v2Records: v2.records,
+        v2Terminals: config.v2.terminals,
+        periodStartMs,
+        nowMs: Date.now(),
+      }).snapshot,
+    [v1, v2.records, config.v2.terminals, periodStartMs],
+  );
+
+  const updateXReport = useCallback(() => {
+    const snapshot = buildXSnapshot();
+    setXStamp({ asOfMs: Date.now(), count: snapshot.count, total: toToken(snapshot.grandTotalPlanck, decimals) });
+    flash(`X updated — ${snapshot.count} payment${snapshot.count === 1 ? "" : "s"} this period`, "green");
+  }, [buildXSnapshot, decimals, flash]);
+
+  const exportXReportCsv = useCallback(() => {
+    downloadReportDocCsv(
+      buildReportDoc({ kind: "x", groupId: loadSavedCreds().groupId, snapshot: buildXSnapshot(), generatedAtMs: Date.now() }),
+    );
+    flash("X report exported (CSV)", "green");
+  }, [buildXSnapshot, flash]);
+
+  const downloadReportCsv = useCallback(
+    (seq: number) => {
+      const record = v1.zReports.find((z) => z.seq === seq);
+      if (!record) return;
+      downloadReportDocCsv(
+        buildReportDoc({
+          kind: "z",
+          groupId: loadSavedCreds().groupId,
+          snapshot: record,
+          seq: record.seq,
+          generatedAtMs: record.committedAtMs,
+        }),
+      );
+      flash(`Report Z·${String(seq).padStart(4, "0")} exported (CSV)`, "green");
+    },
+    [v1.zReports, flash],
   );
 
   return {
@@ -241,5 +373,9 @@ export function usePaymentStream(): PaymentStream {
     checkAll,
     closeOut,
     publishReport,
+    updateXReport,
+    xStamp,
+    exportXReportCsv,
+    downloadReportCsv,
   };
 }

@@ -49,65 +49,87 @@ export interface CoinsTopUpManager {
 }
 
 const DEFAULT_TOPUP_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_ATTEMPTS = 3;
+const DEFAULT_RETRY_DELAY_MS = 2_000;
 
 export interface CreateCoinsClaimEngineOptions {
   /** Override the default 30s top-up timeout (test seam; production uses the default). */
   timeoutMs?: number;
+  /** topUp attempts per claim cycle before giving up (default 3). */
+  maxAttempts?: number;
+  /** Pause between attempts (default 2s — lets the host clear the failed tx). */
+  retryDelayMs?: number;
 }
 
-/**
- * Enabled engine: tops up the host wallet from the bearer coin keys, forwarding
- * the cheque's parsed planck `amount`. (Previously sent `0n`: the terminal-v1
- * reference treats a Coins source as "consume the keys for whatever they're
- * worth" and ignores the amount. Forwarding the claimed value lets the host
- * enforce it — at the risk of an `InsufficientFunds` / `PartialPayment`
- * rejection when the sender-asserted amount disagrees with the coins' real
- * on-chain value.) `topUp` resolving means the host accepted + cleared the
- * coins (claimed); a rejection or timeout is a recoverable `claim_failed`
- * (retried on re-delivery).
- */
+
 export function createCoinsClaimEngine(
   manager: CoinsTopUpManager,
   options: CreateCoinsClaimEngineOptions = {},
 ): ClaimEngine {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TOPUP_TIMEOUT_MS;
+  const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  const retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+
+  const attemptTopUp = async (coins: Uint8Array[], amountPlanck: bigint): Promise<void> => {
+    const { promise: timeout, reject } = Promise.withResolvers<never>();
+    const timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `host did not respond to paymentTopUp within ${timeoutMs}ms — ` +
+              `likely a host-api codec mismatch (PaymentTopUpErr variant unknown to this SDK build); ` +
+              `check the DebugPanel console for a preceding 'Transport error innerDecoder is not a function'`,
+          ),
+        ),
+      timeoutMs,
+    );
+    try {
+      await Promise.race([manager.topUp(amountPlanck, { type: "coins", keys: coins }), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const claimWithRetries = async (coins: Uint8Array[], amountPlanck: bigint): Promise<ClaimResult> => {
+    let lastDiagnostic = "host rejected the top-up";
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      console.log(
+        `[v2:claim] topUp attempt ${attempt}/${maxAttempts} (${amountPlanck}n, coins=${coins.length}) → ` +
+          `host.coinpayment — host SDK builds the on-chain consume+credit tx from each 64B key`,
+      );
+      try {
+        await attemptTopUp(coins, amountPlanck);
+        console.log(
+          `[v2:claim] topUp resolved — coins credited to host wallet` +
+            (attempt > 1 ? ` (attempt ${attempt}/${maxAttempts})` : ""),
+        );
+        return { status: "claimed", attempts: attempt };
+      } catch (error) {
+        lastDiagnostic = error instanceof Error ? error.message : String(error);
+        console.warn(`[v2:claim] topUp attempt ${attempt}/${maxAttempts} rejected/timed out: ${lastDiagnostic}`);
+        if (attempt < maxAttempts) await sleep(retryDelayMs);
+      }
+    }
+    return { status: "claim_failed", attempts: maxAttempts, diagnostic: lastDiagnostic };
+  };
+
+  // One pallet call at a time: the FIFO tail every claim chains onto.
+  let queueTail: Promise<unknown> = Promise.resolve();
+
   return {
     enabled: true,
-    async claim(coins: Uint8Array[], amountPlanck: bigint): Promise<ClaimResult> {
-      console.log(
-        `[v2:claim] topUp(${amountPlanck}n, coins=${coins.length}) → host.coinpayment ` +
-          `— host SDK builds the on-chain consume+credit tx from each 64B key`,
-      );
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () =>
-            reject(
-              new Error(
-                `host did not respond to paymentTopUp within ${timeoutMs}ms — ` +
-                  `likely a host-api codec mismatch (PaymentTopUpErr variant unknown to this SDK build); ` +
-                  `check the DebugPanel console for a preceding 'Transport error innerDecoder is not a function'`,
-              ),
-            ),
-          timeoutMs,
-        );
-      });
-      try {
-        await Promise.race([
-          manager.topUp(amountPlanck, { type: "coins", keys: coins }),
-          timeoutPromise,
-        ]);
-        console.log(`[v2:claim] topUp resolved — coins credited to host wallet`);
-        return { status: "claimed" };
-      } catch (error) {
-        const diagnostic = error instanceof Error ? error.message : String(error);
-        console.warn(`[v2:claim] topUp rejected/timed out: ${diagnostic}`);
-        return { status: "claim_failed", diagnostic };
-      } finally {
-        if (timer !== undefined) clearTimeout(timer);
-      }
+    claim(coins: Uint8Array[], amountPlanck: bigint): Promise<ClaimResult> {
+      const run = queueTail.then(() => claimWithRetries(coins, amountPlanck));
+      queueTail = run; // claimWithRetries never rejects, so the tail can't wedge
+      return run;
     },
   };
+}
+
+function sleep(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
 }
 
 export interface ResolveClaimEngineOptions {

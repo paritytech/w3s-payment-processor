@@ -8,7 +8,7 @@
  */
 import { useState } from "react";
 
-import { fmtDayTime, fmtInt } from "@/shared/utils/ui-format.ts";
+import { fmtDayTime, fmtInt, fmtTime } from "@/shared/utils/ui-format.ts";
 import { Money } from "@/shared/components/Money.tsx";
 import { Icon } from "@/shared/components/Icon.tsx";
 import { Badge, TillDot } from "@/shared/components/indicators.tsx";
@@ -47,6 +47,19 @@ export function Reports({ stream, mobile }: { stream: PaymentStream; mobile: boo
             <span style={{ flex: 1, fontSize: 13.5, color: "var(--text-1)", fontWeight: 700 }}>Grand total</span>
             <span style={{ width: 120, textAlign: "right" }}><Money value={totals.grand} size="md" /></span>
           </div>
+          <DisplayIf condition={stream.xStamp != null}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", margin: "10px 0 2px", background: "var(--surface-2)", borderRadius: "var(--radius-md)", fontSize: 12.5, color: "var(--text-2)" }}>
+              <Icon name="report" size={14} stroke={2} style={{ color: "var(--muted)" }} />
+              <span style={{ flex: 1 }}>
+                X report · as of {fmtTime(stream.xStamp?.asOfMs ?? 0)} · {fmtInt(stream.xStamp?.count ?? 0)} payments (fiscal period)
+              </span>
+              <Money value={stream.xStamp?.total ?? 0} size="sm" />
+            </div>
+          </DisplayIf>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap", padding: "8px 0 12px" }}>
+            <Btn kind="ghost" size="sm" icon="refresh" onClick={stream.updateXReport}>Update</Btn>
+            <Btn kind="ghost" size="sm" icon="download" onClick={stream.exportXReportCsv}>Export CSV</Btn>
+          </div>
         </div>
       </section>
 
@@ -70,7 +83,10 @@ export function Reports({ stream, mobile }: { stream: PaymentStream; mobile: boo
       </section>
 
       <section>
-        <h2 style={{ margin: "0 0 12px", fontFamily: "var(--font-serif)", fontWeight: 400, fontSize: 20, color: "var(--text-1)", letterSpacing: "-0.02em" }}>Past closes</h2>
+        <h2 style={{ margin: "0 0 4px", fontFamily: "var(--font-serif)", fontWeight: 400, fontSize: 20, color: "var(--text-1)", letterSpacing: "-0.02em" }}>Past closes</h2>
+        <p style={{ margin: "0 0 12px", fontSize: 12.5, lineHeight: 1.5, color: "var(--text-3)" }}>
+          Each close can be uploaded to Bulletin, encrypted with the group passkey — the admin console reads it from there.
+        </p>
         <DisplayIf condition={zHistory.length === 0}>
           <div style={{ border: "1px dashed var(--border-strong)", borderRadius: "var(--radius-md)", padding: "26px 20px", textAlign: "center", color: "var(--muted)", fontSize: 13, background: "var(--surface)" }}>
             No end-of-day closes yet. Hit “Close out” above to file the first.
@@ -88,6 +104,7 @@ export function Reports({ stream, mobile }: { stream: PaymentStream; mobile: boo
 
 function ZRow({ z, stream }: { z: ZHistoryEntry; stream: PaymentStream }) {
   const [open, setOpen] = useState(false);
+  const [showTx, setShowTx] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const badge = PUBLISH_BADGE[z.publishState];
 
@@ -125,6 +142,12 @@ function ZRow({ z, stream }: { z: ZHistoryEntry; stream: PaymentStream }) {
             </div>
           ))}
           <div style={{ marginTop: 14, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <Btn kind="ghost" size="sm" icon="eye" onClick={() => setShowTx((s) => !s)}>
+                {showTx ? "Hide transactions" : "View transactions"}
+              </Btn>
+              <Btn kind="ghost" size="sm" icon="download" onClick={() => stream.downloadReportCsv(z.seq)}>Download CSV</Btn>
+            </div>
             <DisplayIf condition={z.publishState === "published" && z.cid != null}>
               <span style={{ fontSize: 11, color: "var(--muted)", fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>CID {z.cid}</span>
             </DisplayIf>
@@ -138,6 +161,32 @@ function ZRow({ z, stream }: { z: ZHistoryEntry; stream: PaymentStream }) {
             <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--red)", lineHeight: 1.5 }}>
               On-chain CID for this report doesn't match — another writer claimed the slot. The encrypted
               report stays unreadable to them; retry to confirm.
+            </div>
+          </DisplayIf>
+          <DisplayIf condition={showTx}>
+            <div style={{ marginTop: 12, border: "1px solid var(--border-subtle)", borderRadius: "var(--radius-md)", overflow: "hidden" }}>
+              <div className="eyebrow" style={{ padding: "10px 14px 6px" }}>
+                Transactions · {fmtInt(z.payments.length)}
+              </div>
+              <DisplayIf condition={z.payments.length === 0}>
+                <div style={{ padding: "4px 14px 12px", fontSize: 12.5, color: "var(--muted)", lineHeight: 1.5 }}>
+                  No individual transactions are recorded for this close (it predates line-item reports).
+                </div>
+              </DisplayIf>
+              <div style={{ maxHeight: 340, overflowY: "auto" }}>
+                {z.payments.map((p) => (
+                  <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 14px", borderTop: "1px solid var(--border-subtle)" }}>
+                    <TillDot id={p.terminalId} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, color: "var(--text-1)", fontWeight: 500 }}>{stream.terminals.find((t) => t.id === p.terminalId)?.name ?? p.terminalId}</div>
+                      <div style={{ fontSize: 11, color: "var(--faint)", marginTop: 1 }}>
+                        {fmtDayTime(p.tsMs)} · {p.blockNumber != null ? `block #${fmtInt(p.blockNumber)}` : "coin payment"}
+                      </div>
+                    </div>
+                    <Money value={p.amount} size="sm" />
+                  </div>
+                ))}
+              </div>
             </div>
           </DisplayIf>
         </div>

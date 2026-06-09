@@ -170,6 +170,9 @@ export async function ingestStatement(
   }
 
   const now = deps.now?.() ?? Date.now();
+  // Cumulative across deliveries: gossip re-delivers a failed cheque, and each
+  // cycle adds its attempts — the record always says how often we tried.
+  const claimAttempts = (existing?.claimAttempts ?? 0) + (result.attempts ?? 0);
   const record: PaymentRecord = {
     id,
     terminalId: match.terminal.terminalId,
@@ -180,7 +183,12 @@ export async function ingestStatement(
     timestampMs: Number(timestamp),
     firstSeenAtMs: existing?.firstSeenAtMs ?? now,
     claimStatus: result.status,
-    claimDiagnostic: result.diagnostic,
+    claimDiagnostic:
+      result.status === "claim_failed"
+        ? `failed after ${claimAttempts} attempt${claimAttempts === 1 ? "" : "s"} — ` +
+          (result.diagnostic ?? "host rejected the top-up")
+        : result.diagnostic,
+    claimAttempts,
     claimedAtMs: result.status === "claimed" ? now : existing?.claimedAtMs,
     source: "v2",
   };

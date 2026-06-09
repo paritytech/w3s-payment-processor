@@ -50,12 +50,10 @@ export function isDevStandalone(): boolean {
 const HOST_HANDSHAKE_TIMEOUT_MS = 15_000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-  });
+  const { promise: timeout, reject } = Promise.withResolvers<never>();
+  const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
   return Promise.race([promise, timeout]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer);
+    clearTimeout(timer);
   });
 }
 
@@ -98,6 +96,27 @@ export function isHostConnected(): boolean {
   return connected;
 }
 
+
+const HOST_MODAL_MAX_LOCK_MS = 120_000;
+
+let hostModalQueue: Promise<unknown> = Promise.resolve();
+
+export function runExclusiveHostModal<T>(task: () => PromiseLike<T>): Promise<T> {
+  const run = Promise.resolve(hostModalQueue).then(task, task);
+  const { promise: ceiling, resolve: openCeiling } = Promise.withResolvers<void>();
+  const timer = setTimeout(openCeiling, HOST_MODAL_MAX_LOCK_MS);
+  hostModalQueue = Promise.race([
+    run.then(
+      () => undefined,
+      () => undefined,
+    ),
+    ceiling,
+  ]).finally(() => {
+    clearTimeout(timer);
+  });
+  return run;
+}
+
 export interface RemoteOriginPermissionOutcome {
   granted: boolean;
   error?: string;
@@ -126,23 +145,20 @@ export async function requestRemoteOriginPermission(
     const ready = await connectToHost();
     if (!ready) return { granted: false, error: "host transport not ready" };
 
-    // The grant itself is unbounded in the SDK — a desktop host that never answers
-    // the "Remote" permission (or one that routes chain RPC through its bridge and
-    // never needs this WS allowlist) would otherwise wedge boot forever: v1's first
-    // await is `requestChainRemotePermissions`, so a hung grant strands the UI on
-    // "Connecting…". Bound it; on timeout we proceed ungranted (the bridge path, or
-    // a real WS-connect failure, surfaces instead of an infinite spinner).
-    return withTimeout(
-      requestPermission({ tag: "Remote", value: [...origins] }).match<RemoteOriginPermissionOutcome>(
-        (granted) => ({ granted }),
-        (err) => ({ granted: false, error: err.payload?.reason ?? err.message }),
-      ),
-      HOST_HANDSHAKE_TIMEOUT_MS,
-      "[host] remote-origin permission",
-    ).catch((caught) => {
-      console.warn(`[host] remote-origin permission failed: ${caught instanceof Error ? caught.message : String(caught)}`);
-      return { granted: false, error: "remote-origin permission timed out" } as RemoteOriginPermissionOutcome;
-    });
+
+    return runExclusiveHostModal(() =>
+      withTimeout(
+        requestPermission({ tag: "Remote", value: [...origins] }).match<RemoteOriginPermissionOutcome>(
+          (granted) => ({ granted }),
+          (err) => ({ granted: false, error: err.payload?.reason ?? err.message }),
+        ),
+        HOST_HANDSHAKE_TIMEOUT_MS,
+        "[host] remote-origin permission",
+      ).catch((caught) => {
+        console.warn(`[host] remote-origin permission failed: ${caught instanceof Error ? caught.message : String(caught)}`);
+        return { granted: false, error: "remote-origin permission timed out" } as RemoteOriginPermissionOutcome;
+      }),
+    );
   })()
     .then((outcome) => {
       if (outcome.granted) remoteOriginCache.set(key, outcome);
@@ -153,5 +169,51 @@ export async function requestRemoteOriginPermission(
     });
 
   inFlightRemoteOrigins.set(key, pending);
+  return pending;
+}
+
+/**
+ * Non-origin Remote grants — the host surfaces the processor's publish path
+ * touches: `ChainSubmit` (the `addProcessorReport` registry write) and
+ * `PreimageSubmit` (the Bulletin ciphertext upload).
+ */
+export type RemotePermissionKind = "ChainSubmit" | "PreimageSubmit" | "StatementSubmit";
+
+export interface RemotePermissionOutcome {
+  granted: boolean;
+  error?: string;
+}
+
+const remotePermissionCache = new Map<RemotePermissionKind, RemotePermissionOutcome>();
+const inFlightRemotePermissions = new Map<RemotePermissionKind, Promise<RemotePermissionOutcome>>();
+
+export async function requestRemotePermission(
+  kind: RemotePermissionKind,
+): Promise<RemotePermissionOutcome> {
+  if (!isInHost()) return { granted: true };
+  const cached = remotePermissionCache.get(kind);
+  if (cached) return cached;
+  const inFlight = inFlightRemotePermissions.get(kind);
+  if (inFlight) return inFlight;
+
+  const pending = (async (): Promise<RemotePermissionOutcome> => {
+    const ready = await connectToHost();
+    if (!ready) return { granted: false, error: "host transport not ready" };
+    return runExclusiveHostModal(() =>
+      requestPermission({ tag: kind, value: undefined }).match<RemotePermissionOutcome>(
+        (granted) => ({ granted }),
+        (err) => ({ granted: false, error: err.payload?.reason ?? err.message }),
+      ),
+    );
+  })()
+    .then((outcome) => {
+      if (outcome.granted) remotePermissionCache.set(kind, outcome);
+      return outcome;
+    })
+    .finally(() => {
+      inFlightRemotePermissions.delete(kind);
+    });
+
+  inFlightRemotePermissions.set(kind, pending);
   return pending;
 }
