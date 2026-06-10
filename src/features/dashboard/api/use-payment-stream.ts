@@ -73,6 +73,8 @@ export interface PaymentStream {
   shop: { name: string; venue: string };
   terminals: StreamTerminal[];
   payments: StreamPayment[];
+  /** Payments swept by past Zs (closed periods), full fidelity, newest first. */
+  historyPayments: StreamPayment[];
   totals: StreamTotals;
   unchecked: number;
   hasData: boolean;
@@ -141,11 +143,12 @@ export function usePaymentStream(): PaymentStream {
   const confirmedBlock = v1.confirmedBlock;
 
   const periodStartMs = useMemo(() => fiscalPeriodStartMs(v1.zReports), [v1.zReports]);
-  const payments = useMemo<StreamPayment[]>(() => {
-    const out: StreamPayment[] = [];
+  const { payments, historyPayments } = useMemo(() => {
+    const open: StreamPayment[] = [];
+    const closed: StreamPayment[] = [];
     for (const e of v1.events) {
-      if (e.blockNumber < periodStartBlock) continue;
-      out.push({
+      const inPeriod = e.blockNumber >= periodStartBlock;
+      (inPeriod ? open : closed).push({
         id: `v1:${e.paymentId}`,
         terminalId: e.terminalId,
         amount: toToken(e.amountPlanck, decimals),
@@ -154,15 +157,18 @@ export function usePaymentStream(): PaymentStream {
         checkable: true,
         checked: e.reconciled,
         attention: false,
-        status: v1Lifecycle(e.blockNumber, scannedBlock, confirmedBlock),
+        // Swept payments are final by definition (a committed Z closed over
+        // them) — don't re-derive from this session's scan heads, which start
+        // at 0 and would misreport old blocks as "finalizing".
+        status: inPeriod ? v1Lifecycle(e.blockNumber, scannedBlock, confirmedBlock) : "confirmed",
         reference: e.paymentId,
         blockNumber: e.blockNumber,
         payerHex: e.fromHex,
       });
     }
     for (const r of v2.records) {
-      if (r.firstSeenAtMs <= periodStartMs) continue; // closed by a previous Z
-      out.push({
+      const inPeriod = r.firstSeenAtMs > periodStartMs; // at/before = closed by a previous Z
+      (inPeriod ? open : closed).push({
         id: `v2:${r.id}`,
         terminalId: r.terminalId,
         amount: toToken(r.amountPlanck, decimals),
@@ -177,8 +183,9 @@ export function usePaymentStream(): PaymentStream {
         claimNote: r.claimDiagnostic,
       });
     }
-    out.sort((a, b) => b.tsMs - a.tsMs);
-    return out;
+    open.sort((a, b) => b.tsMs - a.tsMs);
+    closed.sort((a, b) => b.tsMs - a.tsMs);
+    return { payments: open, historyPayments: closed };
   }, [v1.events, v2.records, periodStartBlock, periodStartMs, decimals, scannedBlock, confirmedBlock]);
 
   const totals = useMemo<StreamTotals>(() => {
@@ -354,6 +361,7 @@ export function usePaymentStream(): PaymentStream {
     shop: { name: config.profile.merchantName, venue: config.profile.merchantId },
     terminals,
     payments,
+    historyPayments,
     totals,
     unchecked,
     hasData: payments.length > 0,

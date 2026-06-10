@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fmtCash, fmtHour, fmtInt, fmtTime, groupByHour, tillColor, toToken } from "@/shared/utils/ui-format.ts";
+import { fmtCash, fmtDayHour, fmtHour, fmtInt, fmtTime, groupByHour, tillColor, toToken } from "@/shared/utils/ui-format.ts";
 
 const at = (h: number, m: number) => new Date(2026, 5, 5, h, m, 0, 0).getTime();
 
@@ -64,6 +64,20 @@ describe("groupByHour", () => {
 
   it("returns no groups for an empty list", () => {
     expect(groupByHour([])).toEqual([]);
+  });
+
+  it("keeps same-hour items from different days apart under a day-qualified label", () => {
+    const atDay = (d: number, h: number, m: number) => new Date(2026, 5, d, h, m, 0, 0).getTime();
+    const items = [
+      { tsMs: atDay(6, 14, 40) }, // Jun 6, 2 PM
+      { tsMs: atDay(6, 14, 5) },
+      { tsMs: atDay(5, 14, 50) }, // Jun 5, 2 PM — adjacent same hour, different day
+    ];
+    // Default hour-only labels would merge all three into one bucket.
+    expect(groupByHour(items).map((g) => g.items.length)).toEqual([3]);
+    const groups = groupByHour(items, fmtDayHour);
+    expect(groups.map((g) => g.hour)).toEqual(["Jun 6 · 2:00 PM", "Jun 5 · 2:00 PM"]);
+    expect(groups.map((g) => g.items.length)).toEqual([2, 1]);
   });
 });
 

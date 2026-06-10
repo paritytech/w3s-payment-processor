@@ -9,6 +9,12 @@ import { formatPlanck } from "@/shared/utils/format.ts";
 export const PROCESSOR_REPORT_FORMAT = "w3s-processor-report";
 export const PROCESSOR_REPORT_VERSION = 1;
 
+/** A published payment line: `ReportPayment` plus the human-readable token amount. */
+export interface ProcessorReportPayment extends ReportPayment {
+  /** `amountPlanck` formatted to whole token units, no symbol (e.g. "12.5"). */
+  amount: string;
+}
+
 export interface ProcessorReportDoc {
   format: "w3s-processor-report";
   version: 1;
@@ -27,7 +33,7 @@ export interface ProcessorReportDoc {
   grandTotalPlanck: string;
   count: number;
   /** Each line item = one payment. Sorted by blockNumber asc, then paymentId asc. */
-  payments: ReportPayment[];
+  payments: ProcessorReportPayment[];
 }
 
 export interface BuildReportDocArgs {
@@ -42,12 +48,13 @@ export interface BuildReportDocArgs {
 
 export function buildReportDoc(args: BuildReportDocArgs): ProcessorReportDoc {
   const { snapshot } = args;
+  const decimals = envConfig.token.decimals;
   return {
     format: PROCESSOR_REPORT_FORMAT,
     version: PROCESSOR_REPORT_VERSION,
     kind: args.kind,
     groupId: args.groupId,
-    token: { symbol: envConfig.token.symbol, decimals: envConfig.token.decimals },
+    token: { symbol: envConfig.token.symbol, decimals },
     generatedAtMs: args.generatedAtMs,
     ...(args.kind === "z" && args.seq !== undefined ? { seq: args.seq } : {}),
     fromBlock: snapshot.fromBlock,
@@ -55,7 +62,10 @@ export function buildReportDoc(args: BuildReportDocArgs): ProcessorReportDoc {
     lines: snapshot.lines,
     grandTotalPlanck: snapshot.grandTotalPlanck,
     count: snapshot.count,
-    payments: snapshot.payments,
+    payments: snapshot.payments.map((p) => ({
+      ...p,
+      amount: formatPlanck(BigInt(p.amountPlanck), decimals),
+    })),
   };
 }
 
@@ -92,7 +102,7 @@ export function reportDocToCsv(doc: ProcessorReportDoc): string {
     [
       p.paymentId,
       p.terminalId,
-      formatPlanck(BigInt(p.amountPlanck), doc.token.decimals),
+      p.amount,
       doc.token.symbol,
       p.amountPlanck,
       p.blockNumber != null ? String(p.blockNumber) : "",

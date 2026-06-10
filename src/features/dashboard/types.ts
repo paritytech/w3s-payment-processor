@@ -56,7 +56,6 @@ export interface StreamTotals {
   count: number;
 }
 
-/
 export interface XReportStamp {
   asOfMs: number;
   count: number;
@@ -68,7 +67,7 @@ export interface ZHistoryPayment {
   tsMs: number;
   terminalId: string;
   amount: number;
-  /** RFC-6 block; abent for coin payments. */
+  /** RFC-6 block; absent for coin payments. */
   blockNumber?: number;
 }
 
