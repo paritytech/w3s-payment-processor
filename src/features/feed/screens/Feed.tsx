@@ -9,7 +9,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 
 import { envConfig } from "@/config.ts";
-import { fmtCash, groupByHour } from "@/shared/utils/ui-format.ts";
+import { fmtCash, fmtDayHour, groupByHour } from "@/shared/utils/ui-format.ts";
 import { Btn, Segmented } from "@/shared/components/controls.tsx";
 import { TillDot } from "@/shared/components/indicators.tsx";
 import { DisplayIf } from "@/shared/components/DisplayIf.tsx";
@@ -20,28 +20,53 @@ import type { StreamPayment } from "@/features/dashboard/types.ts";
 import type { PaymentStream } from "@/features/dashboard/api/use-payment-stream.ts";
 
 type StatusFilter = "all" | "unchecked" | "checked";
+type ScopeFilter = "period" | "history";
 
 export function Feed({ stream, mobile }: { stream: PaymentStream; mobile: boolean }) {
+  const [fScope, setFScope] = useState<ScopeFilter>("period");
   const [fStatus, setFStatus] = useState<StatusFilter>("all");
   const [fTill, setFTill] = useState<string>("all");
   const [selected, setSelected] = useState<StreamPayment | null>(null);
   const nameOf = new Map(stream.terminals.map((t) => [t.id, t.name]));
 
+  // History rows are all older than the open period, but the two rails'
+  // timestamps can interleave around a close — re-sort the union.
+  const source = useMemo(
+    () =>
+      fScope === "history"
+        ? [...stream.payments, ...stream.historyPayments].sort((a, b) => b.tsMs - a.tsMs)
+        : stream.payments,
+    [fScope, stream.payments, stream.historyPayments],
+  );
   const feed = useMemo(
     () =>
-      stream.payments.filter((p) => {
+      source.filter((p) => {
         if (fTill !== "all" && p.terminalId !== fTill) return false;
         if (fStatus === "unchecked") return p.checkable && !p.checked;
         if (fStatus === "checked") return p.checkable && p.checked;
         return true;
       }),
-    [stream.payments, fStatus, fTill],
+    [source, fStatus, fTill],
   );
-  const groups = useMemo(() => groupByHour(feed), [feed]);
+  // Multi-day history needs day-qualified group labels or hours from
+  // different days coalesce.
+  const groups = useMemo(
+    () => groupByHour(feed, fScope === "history" ? fmtDayHour : undefined),
+    [feed, fScope],
+  );
 
   return (
     <div style={{ paddingTop: 18 }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", marginBottom: 18 }}>
+        <Segmented
+          value={fScope}
+          onChange={(id) => setFScope(id as ScopeFilter)}
+          size="sm"
+          items={[
+            { id: "period", label: "This period" },
+            { id: "history", label: "All history" },
+          ]}
+        />
         <Segmented
           value={fStatus}
           onChange={(id) => setFStatus(id as StatusFilter)}

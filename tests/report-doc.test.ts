@@ -52,7 +52,14 @@ describe("buildReportDoc", () => {
     expect(doc.lines).toEqual(RECORD.lines);
     expect(doc.grandTotalPlanck).toBe("3000");
     expect(doc.count).toBe(2);
-    expect(doc.payments).toEqual(RECORD.payments);
+    expect(doc.payments).toEqual(
+      RECORD.payments.map((p) => ({ ...p, amount: csvAmount(p.amountPlanck) })),
+    );
+  });
+
+  it("formats each payment's human-readable amount from its planck value", () => {
+    const doc = buildReportDoc({ kind: "z", groupId: "g-1", snapshot: RECORD, seq: 7, generatedAtMs: 1 });
+    expect(doc.payments.map((p) => p.amount)).toEqual([csvAmount("1000"), csvAmount("2000")]);
   });
 
   it("omits the seq key entirely for X docs", () => {

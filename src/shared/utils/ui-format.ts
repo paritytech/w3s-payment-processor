@@ -41,6 +41,12 @@ export function fmtHour(ms: number): string {
   return `${h}:00 ${ap}`;
 }
 
+/** Day-qualified hour label for multi-day lists (e.g. "Jun 9 · 2:00 PM"). */
+export function fmtDayHour(ms: number): string {
+  const day = new Date(ms).toLocaleDateString("en-US", { day: "numeric", month: "short" });
+  return `${day} · ${fmtHour(ms)}`;
+}
+
 export function fmtDayTime(ms: number): string {
   const day = new Date(ms).toLocaleDateString("en-US", { day: "numeric", month: "short" });
   return `${day}, ${fmtTime(ms)}`;
@@ -70,11 +76,14 @@ export interface HourGroup<T> {
  * The list must already be sorted newest-first (or whatever order the caller
  * wants the buckets in) — grouping only coalesces adjacent same-hour items.
  */
-export function groupByHour<T extends { tsMs: number }>(list: readonly T[]): HourGroup<T>[] {
+export function groupByHour<T extends { tsMs: number }>(
+  list: readonly T[],
+  labelOf: (ms: number) => string = fmtHour,
+): HourGroup<T>[] {
   const out: HourGroup<T>[] = [];
   let cur: HourGroup<T> | null = null;
   for (const item of list) {
-    const hr = fmtHour(item.tsMs);
+    const hr = labelOf(item.tsMs);
     if (!cur || cur.hour !== hr) {
       cur = { hour: hr, items: [] };
       out.push(cur);

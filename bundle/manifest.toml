@@ -9,19 +9,5 @@ app_type = "spa"
 entry = "index.html"
 sandbox = "strict"
 
-# Capabilities are declared ONLY here. Do NOT add a [permissions] section —
-# the host manifest parser rejects unknown sections, which makes it skip wiring
-# host.browser.bridge (the account/transport bridge) and every host-API call
-# (getProductAccount, statement subscribe, paymentTopUp) then fails closed.
-#
-#   host.statementstore — v2 Coinage statement subscription (read-only)
-#   host.data           — durable KV (tx-log, checkpoint, reports, v2 records)
-#   host.coinpayment    — v2 claim engine: paymentManager.topUp(Coins)
-#   host.balance        — payment balance reads
-#   host.api            — host bridge handshake + product account
-#   host.browser.bridge — account transport + Remote(origin) WS allowlisting
-#
-# NOTE: verify `host.statementstore` against the deploy host's extension
-# registry; the v2 live statement feed depends on it (standalone is decode-only).
 [extensions]
-use_extensions = ["host.statementstore", "host.data", "host.coinpayment", "host.balance", "host.api", "host.browser.bridge"]
+use_extensions = ["host.statementstore", "host.data", "host.coinpayment", "host.balance", "host.api", "host.browser.bridge", "host.media"]

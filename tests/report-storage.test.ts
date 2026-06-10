@@ -23,6 +23,8 @@ import { publishZReport, ReportConflictError } from "@/features/reports/api/repo
 import { calculateBulletinCidObject } from "@/shared/utils/wire/cid.ts";
 import type { ZReportRecord } from "@/features/v1/types.ts";
 import { decryptCredentialEnvelope } from "@/shared/utils/wire/credential-envelope.ts";
+import { formatPlanck } from "@/shared/utils/format.ts";
+import { envConfig } from "@/config.ts";
 
 const RECORD: ZReportRecord = {
   seq: 7,
@@ -135,7 +137,9 @@ describe("publishZReport", () => {
     expect(doc.groupId).toBe("funkhaus-zola");
     expect(doc.seq).toBe(7);
     expect(doc.generatedAtMs).toBe(RECORD.committedAtMs);
-    expect(doc.payments).toEqual(RECORD.payments);
+    expect(doc.payments).toEqual(
+      RECORD.payments.map((p) => ({ ...p, amount: formatPlanck(BigInt(p.amountPlanck), envConfig.token.decimals) })),
+    );
     // Local-only lifecycle fields must not be in the published bytes.
     expect("publishState" in doc).toBe(false);
     expect("committedAtMs" in doc).toBe(false);

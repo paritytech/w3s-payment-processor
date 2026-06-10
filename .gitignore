@@ -30,3 +30,4 @@ dist
 .claude/cache/
 .claude/settings.local.json
 .opencode
+qr-codes

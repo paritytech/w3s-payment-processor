@@ -11,6 +11,7 @@
     "start": "vite --host 0.0.0.0 --port 5176 --strictPort",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "validate-config": "vite-node scripts/validate-config.mjs",
+    "generate-qrs": "node scripts/generate-receipt-qrs.mjs",
     "test": "vitest run"
   },
   "dependencies": {
@@ -36,6 +37,7 @@
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^5.0.4",
     "bulletin-deploy": "^0.10.0",
+    "qrcode": "^1.5.4",
     "typescript": "^5",
     "vite": "^7.1.12",
     "vite-node": "^3.0.0",
