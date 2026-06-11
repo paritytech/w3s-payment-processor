@@ -10,6 +10,7 @@ import {
   loadTxLog,
   loadTxLogIds,
   loadZReports,
+  reslotZReport,
   saveCheckpoint,
   saveReportState,
   setEventReconciled,
@@ -70,6 +71,33 @@ describe("v1 persistence — durability across a simulated reload", () => {
     await appendTxLog(kv, [event("2", "2"), event("3", "3")]);
     expect(await loadTxLogIds(kv)).toEqual(new Set(["1", "2", "3"]));
     expect((await loadTxLog(kv)).map((e) => e.paymentId)).toEqual(["1", "2", "3"]);
+  });
+
+  it("reslotZReport moves a z-report to a new seq slot and survives reload", async () => {
+    const backing = new Map<string, string>();
+    const kv = createMemoryKvStore(backing);
+    const base: ZReportRecord = {
+      seq: 5,
+      fromBlock: 1,
+      toBlock: 100,
+      lines: [],
+      grandTotalPlanck: "0",
+      count: 0,
+      payments: [],
+      committedAtMs: 1,
+      source: "v1",
+      publishState: "conflict",
+      lastAttemptCid: "bafkOld",
+    };
+    await appendZReport(kv, base);
+    await appendZReport(kv, { ...base, seq: 6, publishState: "pending", lastAttemptCid: undefined });
+
+    await reslotZReport(kv, 5, { ...base, seq: 8, publishState: "pending" });
+
+    const reloaded = await loadZReports(createMemoryKvStore(backing));
+    expect(reloaded.map((z) => z.seq).sort((a, b) => a - b)).toEqual([6, 8]);
+    expect(reloaded.find((z) => z.seq === 8)!.publishState).toBe("pending");
+    expect(await kv.getJSON("v1-zreports:item:5")).toBeUndefined();
   });
 
   it("setEventReconciled flips the flag on a stored event and persists it", async () => {

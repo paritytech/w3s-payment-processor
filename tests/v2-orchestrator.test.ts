@@ -220,6 +220,203 @@ describe("ingestStatement — dedupe + idempotency", () => {
   });
 });
 
+describe("ingestStatement — re-presented payment ids (duplicates)", () => {
+  // A wallet stamps every NEW statement with its own wall-clock, so a
+  // re-presented sale (till showed the same payment id, customer tapped again)
+  // differs from gossip re-delivery of the settled statement (identical bytes,
+  // identical timestamp) by the payload timestamp.
+  const retap: W3sPaymentDataV1 = {
+    amount: "12.34",
+    timestamp: 1_700_000_060_000n, // 60s after `payload`
+    coins: [new Uint8Array(64).fill(9)],
+    id: "pay-1",
+  };
+
+  it("refuses a NEW statement re-using a settled id: duplicate line item, original untouched, no topUp", async () => {
+    const topUp = vi.fn(async () => undefined);
+    const terminal = makeTerminal(TOPIC_HEX, "t1");
+    const records = new Map<string, PaymentRecord>();
+    const persisted: PaymentRecord[] = [];
+    const d = {
+      terminalsByTopic: indexTerminalsByTopic([terminal]),
+      claimEngine: createCoinsClaimEngine({ topUp }),
+      binding: { claimsEnabled: true, boundTerminalIds: new Set(["t1"]) },
+      tokenDecimals: 6,
+      records,
+      inflight: new Set<string>(),
+      sessionStartMs: 0,
+      persist: async (r: PaymentRecord) => void persisted.push(r),
+      now: () => 9_000,
+    };
+
+    const original = await ingestStatement({ topics: [terminal.topic], data: envelopeFor(terminal, payload) }, d);
+    expect(original?.claimStatus).toBe("claimed");
+
+    const dup = await ingestStatement({ topics: [terminal.topic], data: envelopeFor(terminal, retap) }, d);
+
+    expect(topUp).toHaveBeenCalledOnce(); // only the original claim ever reached the host
+    expect(dup).toMatchObject({
+      id: "pay-1::dup::1700000060000",
+      duplicateOfId: "pay-1",
+      claimStatus: "duplicate",
+      terminalId: "t1",
+      amountPlanck: "12340000",
+      coinsCount: 1,
+      timestampMs: 1_700_000_060_000,
+      firstSeenAtMs: 9_000,
+      source: "v2",
+    });
+    expect(dup?.claimedAtMs).toBeUndefined();
+    // The settled record is untouched and both live side by side.
+    expect(records.get("pay-1")).toBe(original);
+    expect(records.get("pay-1::dup::1700000060000")).toBe(dup);
+    expect(persisted.map((r) => r.id)).toEqual(["pay-1", "pay-1::dup::1700000060000"]);
+  });
+
+  it("collapses gossip re-deliveries of the duplicate statement — idempotent in-session and across a restart", async () => {
+    const topUp = vi.fn(async () => undefined);
+    const terminal = makeTerminal(TOPIC_HEX, "t1");
+    const records = new Map<string, PaymentRecord>();
+    const persisted: PaymentRecord[] = [];
+    const d = {
+      terminalsByTopic: indexTerminalsByTopic([terminal]),
+      claimEngine: createCoinsClaimEngine({ topUp }),
+      binding: { claimsEnabled: true, boundTerminalIds: new Set(["t1"]) },
+      tokenDecimals: 6,
+      records,
+      inflight: new Set<string>(),
+      sessionStartMs: 0,
+      persist: async (r: PaymentRecord) => void persisted.push(r),
+    };
+    const retapStatement: StatementLike = { topics: [terminal.topic], data: envelopeFor(terminal, retap) };
+
+    await ingestStatement({ topics: [terminal.topic], data: envelopeFor(terminal, payload) }, d);
+    const dup = await ingestStatement(retapStatement, d);
+    const redelivered = await ingestStatement(retapStatement, d);
+    // Simulated restart: rehydrated records map, fresh deps.
+    const afterRestart = await ingestStatement(retapStatement, { ...d, records: new Map(records) });
+
+    expect(dup?.claimStatus).toBe("duplicate");
+    expect(redelivered).toBe(dup); // same record instance, no second line item
+    expect(afterRestart?.claimStatus).toBe("duplicate");
+    expect(afterRestart?.id).toBe("pay-1::dup::1700000060000");
+    expect(persisted).toHaveLength(2); // original + ONE duplicate, never re-persisted
+    expect(topUp).toHaveBeenCalledOnce();
+  });
+
+  it("treats a same-id statement as a claim retry — NOT a duplicate — while the original is unsettled", async () => {
+    const terminal = makeTerminal(TOPIC_HEX, "t1");
+    const records = new Map<string, PaymentRecord>();
+    const base = {
+      terminalsByTopic: indexTerminalsByTopic([terminal]),
+      binding: { claimsEnabled: true, boundTerminalIds: new Set(["t1"]) },
+      tokenDecimals: 6,
+      records,
+      inflight: new Set<string>(),
+      sessionStartMs: 0,
+      persist: async () => {},
+    };
+
+    const blocked = await ingestStatement(
+      { topics: [terminal.topic], data: envelopeFor(terminal, payload) },
+      { ...base, claimEngine: createDisabledClaimEngine("R6") },
+    );
+    expect(blocked?.claimStatus).toBe("claim_blocked");
+
+    // Same id, new timestamp, while unsettled → the recovery path must keep
+    // claiming (this time with the re-tap's coins), not flag a duplicate.
+    const topUp = vi.fn(async () => undefined);
+    const claimed = await ingestStatement(
+      { topics: [terminal.topic], data: envelopeFor(terminal, retap) },
+      { ...base, claimEngine: createCoinsClaimEngine({ topUp }) },
+    );
+    expect(claimed?.claimStatus).toBe("claimed");
+    expect(claimed?.id).toBe("pay-1");
+    expect(topUp).toHaveBeenCalledWith(12_340_000n, { type: "coins", keys: retap.coins });
+    expect(records.has("pay-1::dup::1700000060000")).toBe(false);
+  });
+});
+
+describe("ingestStatement — immediate pending line item + detection", () => {
+  it("inserts a pending row the moment the tap decodes, then resolves it in place (pending never persisted)", async () => {
+    // Gate the host response so the test can observe the mid-claim state.
+    let releaseTopUp: () => void = () => {};
+    let releaseStarted: () => void = () => {};
+    const topUpStarted = new Promise<void>((resolve) => { releaseStarted = resolve; });
+    const topUp = vi.fn(async () => {
+      releaseStarted();
+      await new Promise<void>((resolve) => { releaseTopUp = resolve; });
+    });
+    const terminal = makeTerminal(TOPIC_HEX, "t1");
+    const records = new Map<string, PaymentRecord>();
+    const persisted: PaymentRecord[] = [];
+    const detected: PaymentRecord[] = [];
+    const publishes: string[] = [];
+    const nowValues = [1_000, 2_000]; // pending firstSeen, then post-claim stamp
+    const d = {
+      terminalsByTopic: indexTerminalsByTopic([terminal]),
+      claimEngine: createCoinsClaimEngine({ topUp }),
+      binding: { claimsEnabled: true, boundTerminalIds: new Set(["t1"]) },
+      tokenDecimals: 6,
+      records,
+      inflight: new Set<string>(),
+      sessionStartMs: 0,
+      persist: async (r: PaymentRecord) => void persisted.push(r),
+      publish: () => void publishes.push(records.get("pay-1")?.claimStatus ?? "none"),
+      onPaymentDetected: (r: PaymentRecord) => void detected.push(r),
+      now: () => nowValues.shift() ?? 9_999,
+    };
+
+    const run = ingestStatement({ topics: [terminal.topic], data: envelopeFor(terminal, payload) }, d);
+    await topUpStarted;
+
+    // Mid-claim: the line item is already live and the toast event fired —
+    // but nothing durable yet.
+    expect(records.get("pay-1")).toMatchObject({ claimStatus: "pending", firstSeenAtMs: 1_000, amount: "12.34", terminalId: "t1" });
+    expect(detected).toHaveLength(1);
+    expect(detected[0]?.claimStatus).toBe("pending");
+    expect(persisted).toHaveLength(0);
+
+    releaseTopUp();
+    const final = await run;
+    expect(final).toMatchObject({ claimStatus: "claimed", firstSeenAtMs: 1_000, claimedAtMs: 2_000 });
+    expect(publishes).toEqual(["pending", "claimed"]); // one live update per phase
+    expect(persisted.map((r) => r.claimStatus)).toEqual(["claimed"]); // pending was in-memory only
+    expect(detected).toHaveLength(1); // detection fired exactly once
+  });
+
+  it("re-runs the pending phase on a retry of a known payment but never re-fires detection", async () => {
+    const terminal = makeTerminal(TOPIC_HEX, "t1");
+    const records = new Map<string, PaymentRecord>();
+    const detected: PaymentRecord[] = [];
+    const publishes: string[] = [];
+    const base = {
+      terminalsByTopic: indexTerminalsByTopic([terminal]),
+      binding: { claimsEnabled: true, boundTerminalIds: new Set(["t1"]) },
+      tokenDecimals: 6,
+      records,
+      inflight: new Set<string>(),
+      sessionStartMs: 0,
+      persist: async () => {},
+      publish: () => void publishes.push(records.get("pay-1")?.claimStatus ?? "none"),
+      onPaymentDetected: (r: PaymentRecord) => void detected.push(r),
+    };
+    const statement: StatementLike = { topics: [terminal.topic], data: envelopeFor(terminal, payload) };
+
+    const blocked = await ingestStatement(statement, { ...base, claimEngine: createDisabledClaimEngine("R6") });
+    expect(blocked?.claimStatus).toBe("claim_blocked");
+    expect(detected).toHaveLength(1); // first sighting toasts
+
+    const claimed = await ingestStatement(statement, {
+      ...base,
+      claimEngine: createCoinsClaimEngine({ topUp: vi.fn(async () => undefined) }),
+    });
+    expect(claimed?.claimStatus).toBe("claimed");
+    expect(detected).toHaveLength(1); // retry of a known id — not a "new payment"
+    expect(publishes).toEqual(["pending", "claim_blocked", "pending", "claimed"]);
+  });
+});
+
 describe("ingestStatement — retry semantics", () => {
   it("claims even when the terminal payout differs from the host wallet", async () => {
     const claim = vi.fn(async () => ({ status: "claimed" as const }));

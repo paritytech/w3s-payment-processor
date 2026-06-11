@@ -19,6 +19,20 @@ export interface HostAccountUiState {
   error?: string;
 }
 
+/**
+ * Most recent first-time payment detection — set by the engine when a
+ * never-seen payment id lands as a `pending` record. Drives the
+ * "New payment detected" toast; each event is a fresh object so consumers
+ * can diff by reference.
+ */
+export interface V2PaymentDetection {
+  id: string;
+  terminalId: string;
+  /** Token-unit amount string straight from the payload (e.g. "12.34"). */
+  amount: string;
+  atMs: number;
+}
+
 
 export interface V2MonitorState {
   status: V2Status;
@@ -32,6 +46,7 @@ export interface V2MonitorState {
   error?: string;
   hostAccount: HostAccountUiState;
   requestHostLogin?: () => Promise<void>;
+  lastDetection?: V2PaymentDetection;
 }
 
 /** Process-wide v2 monitor state. */

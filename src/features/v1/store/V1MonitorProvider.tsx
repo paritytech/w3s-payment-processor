@@ -6,6 +6,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import { useProcessorConfig } from "@/shared/store/useProcessorConfig.tsx";
 import { startV1Monitor, type V1MonitorHandle } from "@/features/v1/api/engine.ts";
 import { clampPeriodStart, loadReportState, loadZReports } from "@/features/v1/api/persistence.ts";
+import { syncPublishedReports } from "@/features/reports/api/report-sync.ts";
 import { resolveKvStore } from "@/shared/utils/kv-store.ts";
 import { useV1Store } from "@/features/v1/store/useV1Store.ts";
 
@@ -15,6 +16,14 @@ const V1HandleContext = createContext<V1MonitorHandle | null>(null);
 export function V1MonitorProvider({ children }: { children: ReactNode }) {
   const config = useProcessorConfig();
   const [handle, setHandle] = useState<V1MonitorHandle | null>(null);
+  const fiscalHydrated = useV1Store((state) => state.fiscalHydrated);
+
+  useEffect(() => {
+    if (!fiscalHydrated) return;
+    void syncPublishedReports(resolveKvStore()).catch((error) => {
+      console.warn("[reports] sync: published-report pull failed", error);
+    });
+  }, [fiscalHydrated]);
 
   useEffect(() => {
     if (!config.v1.enabled || !config.v1.mode) {

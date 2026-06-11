@@ -52,8 +52,12 @@ export interface CombinedSnapshot {
 export function buildCombinedSnapshot(inputs: CombinedPeriodInputs): CombinedSnapshot {
   const v1 = computeReport(inputs.v1Events, inputs.periodStartBlock, inputs.finalizedBlock, inputs.v1Terminals);
 
+  // Claim status is operational, not fiscal — blocked/failed coin payments
+  // still count (the customer paid; recovery is the merchant's problem).
+  // `duplicate` records are the one exception: a refused re-tap of a settled
+  // sale moved no money, so they never enter totals or Z line items.
   const v2Payments: ReportPayment[] = inputs.v2Records
-    .filter((r) => r.firstSeenAtMs > inputs.periodStartMs && r.firstSeenAtMs <= inputs.nowMs)
+    .filter((r) => r.claimStatus !== "duplicate" && r.firstSeenAtMs > inputs.periodStartMs && r.firstSeenAtMs <= inputs.nowMs)
     .map((r) => ({
       paymentId: r.id,
       terminalId: r.terminalId,

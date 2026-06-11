@@ -11,7 +11,10 @@ import * as Sentry from "@sentry/react";
 
 import { App } from "@/app/App.tsx";
 import { ErrorBoundary } from "@/shared/components/ErrorBoundary.tsx";
+import { armPaymentChime } from "@/shared/utils/chime.ts";
 import "@/styles.css";
+
+armPaymentChime();
 
 const container = document.getElementById("root");
 if (!container) throw new Error("missing #root container");

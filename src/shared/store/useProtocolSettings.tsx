@@ -4,13 +4,26 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { envConfig, type ProtocolEnablement } from "@/config.ts";
+import {
+  DEFAULT_CHAIN_TRANSPORT,
+  getChainTransport,
+  setChainTransport as applyChainTransport,
+  type ChainTransport,
+} from "@/shared/api/chain-transport.ts";
+import { dropStaleTransportClients, requestChainRemotePermissions } from "@/shared/api/client.ts";
 
 const STORAGE_KEY = "w3spay-protocol-settings:v1";
 
+export interface ProtocolSettingsDefaults extends ProtocolEnablement {
+  chainTransport: ChainTransport;
+}
+
 export interface ProtocolSettingsValue extends ProtocolEnablement {
-  defaults: ProtocolEnablement;
+  chainTransport: ChainTransport;
+  defaults: ProtocolSettingsDefaults;
   setV1Enabled: (enabled: boolean) => void;
   setV2Enabled: (enabled: boolean) => void;
+  setChainTransport: (transport: ChainTransport) => void;
   resetToDefaults: () => void;
 }
 
@@ -41,20 +54,41 @@ function saveStored(value: ProtocolEnablement): void {
 }
 
 export function ProtocolSettingsProvider({ children }: { children: ReactNode }) {
-  const defaults = envConfig.protocols;
-  const [settings, setSettings] = useState<ProtocolEnablement>(() => readStored(defaults));
+  const defaults = useMemo<ProtocolSettingsDefaults>(
+    () => ({ ...envConfig.protocols, chainTransport: DEFAULT_CHAIN_TRANSPORT }),
+    [],
+  );
+  const [settings, setSettings] = useState<ProtocolEnablement>(() => readStored(envConfig.protocols));
+  const [transport, setTransport] = useState<ChainTransport>(getChainTransport);
 
   useEffect(() => saveStored(settings), [settings]);
+
+  // Ordering: persist + reap stale clients before the state update restarts
+  // the engines (fresh effectiveConfig), so their lookups hit the new transport.
+  const switchTransport = (next: ChainTransport) => {
+    if (next === getChainTransport()) return;
+    applyChainTransport(next);
+    dropStaleTransportClients();
+    // No-op on "host"; on "rpc" it prompts the host for WS access right at the
+    // switch (deduped with the engine-restart request via the in-flight cache).
+    void requestChainRemotePermissions();
+    setTransport(next);
+  };
 
   const value = useMemo<ProtocolSettingsValue>(
     () => ({
       ...settings,
+      chainTransport: transport,
       defaults,
       setV1Enabled: (enabled) => setSettings((s) => ({ ...s, v1Enabled: enabled })),
       setV2Enabled: (enabled) => setSettings((s) => ({ ...s, v2Enabled: enabled })),
-      resetToDefaults: () => setSettings(defaults),
+      setChainTransport: switchTransport,
+      resetToDefaults: () => {
+        setSettings({ v1Enabled: defaults.v1Enabled, v2Enabled: defaults.v2Enabled });
+        switchTransport(defaults.chainTransport);
+      },
     }),
-    [defaults, settings],
+    [defaults, settings, transport],
   );
 
   return <ProtocolSettingsContext.Provider value={value}>{children}</ProtocolSettingsContext.Provider>;
