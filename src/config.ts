@@ -10,7 +10,6 @@ import {
   readStringRequired,
 } from "./shared/utils/env.ts";
 
-
 export type {
   HostConfig,
   PaymentProcessorConfigInput,
@@ -84,7 +83,7 @@ function readEnv() {
       ),
       registryAddress: readString(
         "VITE_W3SPAY_REGISTRY_ADDRESS",
-        "0x70f6a449d770931419cfa8d8412e3a5d6377e905",
+        "0xff3b3e8cc1c6bc8a67ae933dc238595c2cc6402b",
       ),
     },
     telemetry: {

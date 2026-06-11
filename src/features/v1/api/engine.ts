@@ -16,6 +16,7 @@ import {
 } from "@/shared/api/client.ts";
 import type { PolkadotClient } from "polkadot-api";
 import { resolveKvStore } from "@/shared/utils/kv-store.ts";
+import { playPaymentChime } from "@/shared/utils/chime.ts";
 import type { ResolvedV1Mode } from "@/config.ts"
 
 import { fetchTokenBalance, TOKEN_BALANCE_TTL_MS } from "@/features/v1/api/balances.ts";
@@ -98,7 +99,7 @@ export async function startV1Monitor(mode: ResolvedV1Mode, signal?: AbortSignal)
 
   try {
     await requestChainRemotePermissions();
-    dbg("chain remote permissions granted", "permissions");
+    dbg("chain remote permissions ensured (rpc transport only)", "permissions");
     const terminals = await resolveV1Terminals(mode, mainChainClient, envConfig.readOnlyOrigin);
     const terminalsByPayoutHex = indexTerminalsByPayout(terminals);
     dbg(`resolved ${terminals.length} terminal(s); loading durable state…`, "terminals");
@@ -234,7 +235,11 @@ export async function startV1Monitor(mode: ResolvedV1Mode, signal?: AbortSignal)
               // Live blocks: any prior watch error is stale.
               error: undefined,
             });
-            if (fresh.length > 0) void refreshBalances();
+            if (fresh.length > 0) {
+              void refreshBalances();
+              // Backfill ordering: every replayed block observes a non-null catchupProgress, so only live-tail detections ding.
+              if (state.catchupProgress === null) playPaymentChime();
+            }
           },
           onWarn: (warn) => {
             dbg(`onWarn: ${warn}`);

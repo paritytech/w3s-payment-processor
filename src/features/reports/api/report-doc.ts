@@ -97,11 +97,12 @@ function escCsv(value: string): string {
 }
 
 export function reportDocToCsv(doc: ProcessorReportDoc): string {
-  const header = "payment_id,terminal_id,amount,token,amount_planck,block_number,observed_at,payer";
+  const header = "payment_id,terminal_id,payment_type,amount,token,amount_planck,block_number,observed_at,payer";
   const rows = doc.payments.map((p) =>
     [
       p.paymentId,
       p.terminalId,
+      p.blockNumber != null ? "v1" : "v2",
       p.amount,
       doc.token.symbol,
       p.amountPlanck,

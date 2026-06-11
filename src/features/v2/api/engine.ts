@@ -21,6 +21,7 @@ import { subscribeStatementTopics } from "@/shared/api/host/statement-store.ts";
 import { recordBootEvent } from "@/shared/api/host/debug/debug-store.ts";
 import { topicKey } from "@/shared/utils/wire/topic.ts";
 import { resolveKvStore } from "@/shared/utils/kv-store.ts";
+import { playPaymentChime } from "@/shared/utils/chime.ts";
 import type { ResolvedV2Terminal } from "@/config.ts"
 
 import { checkWalletBinding } from "@/features/v2/api/binding.ts";
@@ -134,6 +135,21 @@ export async function startV2Monitor(terminals: ResolvedV2Terminal[], signal?: A
       inflight,
       sessionStartMs,
       persist: (record: PaymentRecord) => upsertRecord(kv, record),
+      // Live UI: re-publish on every record mutation (pending → resolved) so a
+      // row appears the instant a tap decodes, not at end-of-page.
+      publish: publishRecords,
+      onPaymentDetected: (record: PaymentRecord) => {
+        dbg(`detected NEW payment id=${record.id} amount=${record.amount} (${record.terminalId}) — pending claim`);
+        playPaymentChime();
+        useV2Store.setState({
+          lastDetection: {
+            id: record.id,
+            terminalId: record.terminalId,
+            amount: record.amount,
+            atMs: Date.now(),
+          },
+        });
+      },
       onDecodeFailure: (topicHex, reason) => {
         decodeFailures += 1;
         dbg(`decode-failure on ${topicHex.slice(0, 8)}…: ${reason}`);
@@ -215,9 +231,10 @@ export async function startV2Monitor(terminals: ResolvedV2Terminal[], signal?: A
           const claimed = ours.filter((r) => r.claimStatus === "claimed").length;
           const blocked = ours.filter((r) => r.claimStatus === "claim_blocked").length;
           const failed = ours.filter((r) => r.claimStatus === "claim_failed").length;
+          const duplicates = ours.filter((r) => r.claimStatus === "duplicate").length;
           dbg(
             `page: ${page.statements.length} statement(s) — ours=${ours.length} ` +
-              `(claimed=${claimed}, blocked=${blocked}, failed=${failed}); ` +
+              `(claimed=${claimed}, blocked=${blocked}, failed=${failed}, duplicates=${duplicates}); ` +
               `decode-failures+=${decodeDelta}`,
           );
           for (const r of ours) {

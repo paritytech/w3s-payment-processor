@@ -32,6 +32,9 @@
 #                               coinage runtime are present in the chosen env.
 #   - VITE_NETWORK              App chain key. Defaults to BULLETIN_ENV and
 #                               MUST match it.
+#   - BULLETIN_DEPLOY_PUBLISH   Set to `true` to pass --publish to bulletin-deploy,
+#                               listing the .dot in the on-chain Publisher registry
+#                               (paseo-next-v2 only). Default: false (upload only).
 #
 set -euo pipefail
 
@@ -70,6 +73,7 @@ _load_env "$SCRIPT_DIR/.env.local" 1
 BUILD_DIR="$SCRIPT_DIR/dist"
 GATEWAY_BASE="${DOTNS_GATEWAY_BASE:-dot.li}"
 BULLETIN_ENV="${BULLETIN_ENV:-paseo-next-v2}"
+BULLETIN_DEPLOY_PUBLISH="${BULLETIN_DEPLOY_PUBLISH:-false}"
 MIN_BULLETIN_DEPLOY_VERSION="0.10.0"
 _arg_domain="${1:-}"
 # Prefer VITE_-prefixed name (shared with src/config.ts); fall back to legacy.
@@ -268,8 +272,12 @@ if [[ ! -f "$BUILD_DIR/manifest.toml" ]]; then
   exit 1
 fi
 echo ""
-echo "==> Deploying ${VITE_DOTNS_PRODUCT_DOMAIN} to Paseo Next v2 (BULLETIN_ENV=${BULLETIN_ENV})..."
-bulletin-deploy --env "$BULLETIN_ENV" --mnemonic "$RAW_MNEMONIC" "$BUILD_DIR" "$VITE_DOTNS_PRODUCT_DOMAIN"
+echo "==> Publish to Browse: ${BULLETIN_DEPLOY_PUBLISH}"
+if [[ "$BULLETIN_DEPLOY_PUBLISH" == "true" ]]; then
+  bulletin-deploy --publish --env "$BULLETIN_ENV" --mnemonic "$RAW_MNEMONIC" "$BUILD_DIR" "$VITE_DOTNS_PRODUCT_DOMAIN"
+else
+  bulletin-deploy --env "$BULLETIN_ENV" --mnemonic "$RAW_MNEMONIC" "$BUILD_DIR" "$VITE_DOTNS_PRODUCT_DOMAIN"
+fi
 NAME="${VITE_DOTNS_PRODUCT_DOMAIN%.dot}"
 echo ""
 echo "==> Done! Live at:"

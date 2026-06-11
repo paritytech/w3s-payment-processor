@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // @paritytech
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { envConfig } from "@/config.ts";
 import { useProcessorConfig } from "@/shared/store/useProcessorConfig.tsx";
@@ -35,6 +35,7 @@ function v1Lifecycle(blockNumber: number, scannedHead: number, confirmedHead: nu
 function v2Lifecycle(claimStatus: ClaimStatus): PaymentLifecycle {
   if (claimStatus === "claimed") return "confirmed";
   if (claimStatus === "pending") return "finalizing";
+  if (claimStatus === "duplicate") return "duplicate";
   return "failed";
 }
 
@@ -138,6 +139,18 @@ export function usePaymentStream(): PaymentStream {
     return out;
   }, [v1.terminals, config.v2.terminals]);
 
+  // "New payment detected" toast — reacts only to detections that arrive
+  // after mount: the ref seeds with whatever the store already holds, so a
+  // remount (StrictMode, tab navigation) can't replay an old event.
+  const seenDetection = useRef(v2.lastDetection);
+  useEffect(() => {
+    const det = v2.lastDetection;
+    if (!det || det === seenDetection.current) return;
+    seenDetection.current = det;
+    const till = terminals.find((t) => t.id === det.terminalId);
+    flash(`New payment detected — ${det.amount} ${envConfig.token.symbol} (${till?.name ?? det.terminalId})`, "blue");
+  }, [v2.lastDetection, terminals, flash]);
+
   const periodStartBlock = v1.reportState.periodStartBlock;
   const scannedBlock = v1.finalizedBlock;
   const confirmedBlock = v1.confirmedBlock;
@@ -178,7 +191,8 @@ export function usePaymentStream(): PaymentStream {
         checked: false,
         attention: r.claimStatus !== "claimed",
         status: v2Lifecycle(r.claimStatus),
-        reference: r.id,
+        reference: r.duplicateOfId ?? r.id,
+        duplicate: r.claimStatus === "duplicate",
         coinsCount: r.coinsCount,
         claimNote: r.claimDiagnostic,
       });
@@ -194,6 +208,7 @@ export function usePaymentStream(): PaymentStream {
     let grand = 0;
     let count = 0;
     for (const p of payments) {
+      if (p.duplicate) continue; // refused re-tap of a settled sale — no money received
       let cell = perTill.get(p.terminalId);
       if (!cell) {
         cell = { amount: 0, count: 0 };
@@ -302,7 +317,13 @@ export function usePaymentStream(): PaymentStream {
   const publishReport = useCallback(
     (seq: number): Promise<void> =>
       publishZ(seq).then(
-        () => flash(`Report Z·${String(seq).padStart(4, "0")} published on-chain`, "green"),
+        (published) =>
+          flash(
+            published.seq === seq
+              ? `Report Z·${String(seq).padStart(4, "0")} published on-chain`
+              : `Slot Z·${String(seq).padStart(4, "0")} was taken — report published on-chain as Z·${String(published.seq).padStart(4, "0")}`,
+            "green",
+          ),
         (error) => flash(error instanceof Error ? error.message : "Publish failed", "red"),
       ),
     [publishZ, flash],

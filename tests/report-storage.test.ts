@@ -19,7 +19,11 @@ vi.mock("@/shared/api/contracts/read.ts", () => ({
 vi.mock("@/shared/api/client.ts", () => ({ mainChainClient: () => ({}) }));
 vi.mock("@/shared/api/host/host-api.ts", () => ({ preimageManager: { submit: vi.fn() } }));
 
-import { publishZReport, ReportConflictError } from "@/features/reports/api/report-storage.ts";
+import {
+  highestClaimedReportSeq,
+  publishZReport,
+  ReportConflictError,
+} from "@/features/reports/api/report-storage.ts";
 import { calculateBulletinCidObject } from "@/shared/utils/wire/cid.ts";
 import type { ZReportRecord } from "@/features/v1/types.ts";
 import { decryptCredentialEnvelope } from "@/shared/utils/wire/credential-envelope.ts";
@@ -245,5 +249,20 @@ describe("publishZReport", () => {
     ).rejects.toThrow(/host/i);
     expect(submitted).toBe(false);
     expect(writeContractMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("highestClaimedReportSeq", () => {
+  it("returns the max claimed seq for the group", async () => {
+    readContractMock.mockResolvedValueOnce([3n, 9n, 4n]);
+    await expect(highestClaimedReportSeq("funkhaus-zola")).resolves.toBe(9);
+    const opts = readContractMock.mock.calls[0]![1] as { functionName: string; args: readonly unknown[] };
+    expect(opts.functionName).toBe("getProcessorReportSeqs");
+    expect(opts.args).toEqual(["funkhaus-zola"]);
+  });
+
+  it("returns 0 when the group has no claimed slots", async () => {
+    readContractMock.mockResolvedValueOnce([]);
+    await expect(highestClaimedReportSeq("funkhaus-zola")).resolves.toBe(0);
   });
 });

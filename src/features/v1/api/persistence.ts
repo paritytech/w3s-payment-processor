@@ -128,3 +128,18 @@ export async function appendZReport(kv: KvStore, record: ZReportRecord): Promise
     await kv.setJSON(ZREPORTS_INDEX_KEY, seqs);
   }
 }
+
+/**
+ * Move a Z report to a new seq slot (`record.seq`): write the new item, swap
+ * the index entry, then drop the old item. Ordered so a crash at any point
+ * leaves a loadable store — the index never references a missing item, and an
+ * orphaned old/new item is overwritten or ignored on the next pass.
+ */
+export async function reslotZReport(kv: KvStore, oldSeq: number, record: ZReportRecord): Promise<void> {
+  await kv.setJSON(`v1-zreports:item:${record.seq}`, record);
+  const seqs = (await kv.getJSON<number[]>(ZREPORTS_INDEX_KEY)) ?? [];
+  const next = seqs.filter((seq) => seq !== oldSeq);
+  if (!next.includes(record.seq)) next.push(record.seq);
+  await kv.setJSON(ZREPORTS_INDEX_KEY, next);
+  await kv.remove(`v1-zreports:item:${oldSeq}`);
+}

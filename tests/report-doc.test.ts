@@ -99,11 +99,11 @@ describe("reportDocToCsv", () => {
   it("emits a header plus one row per payment, amounts in token units and planck", () => {
     const csv = reportDocToCsv(doc(RECORD.payments));
     const [header, ...rows] = csv.split("\n");
-    expect(header).toBe("payment_id,terminal_id,amount,token,amount_planck,block_number,observed_at,payer");
+    expect(header).toBe("payment_id,terminal_id,payment_type,amount,token,amount_planck,block_number,observed_at,payer");
     expect(rows).toHaveLength(2);
     // 1000 planck @ envConfig decimals — token-unit column derives from formatPlanck.
     expect(rows[0]).toBe(
-      `p1,t1,${csvAmount("1000")},${envConfig.token.symbol},1000,5,${new Date(50).toISOString()},`,
+      `p1,t1,v1,${csvAmount("1000")},${envConfig.token.symbol},1000,5,${new Date(50).toISOString()},`,
     );
     expect(rows[1]!.endsWith(`,0x${"b".repeat(64)}`)).toBe(true);
   });
@@ -113,13 +113,13 @@ describe("reportDocToCsv", () => {
       doc([{ paymentId: 'p,"x"', terminalId: "till, front", amountPlanck: "1", blockNumber: 1, observedAtMs: 0 }]),
     );
     const row = csv.split("\n")[1]!;
-    expect(row.startsWith('"p,""x""","till, front",')).toBe(true);
+    expect(row.startsWith('"p,""x""","till, front",v1,')).toBe(true);
   });
 
-  it("leaves the block cell empty for coin payments (no block number)", () => {
+  it("marks coin payments v2 and leaves their block cell empty", () => {
     const csv = reportDocToCsv(doc([{ paymentId: "c-1", terminalId: "tap-1", amountPlanck: "1000", observedAtMs: 50 }]));
     expect(csv.split("\n")[1]).toBe(
-      `c-1,tap-1,${csvAmount("1000")},${envConfig.token.symbol},1000,,${new Date(50).toISOString()},`,
+      `c-1,tap-1,v2,${csvAmount("1000")},${envConfig.token.symbol},1000,,${new Date(50).toISOString()},`,
     );
   });
 

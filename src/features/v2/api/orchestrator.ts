@@ -3,10 +3,13 @@
 
 /**
  * v2 ingest pipeline: topic-match → ECIES decrypt → dedupe by payload id →
- * claim (per-terminal binding gate) → persist. Decrypt/decode failures on open
+ * immediate `pending` line item (+ detection event) → claim (per-terminal
+ * binding gate) → resolve in place + persist. Decrypt/decode failures on open
  * topics are counted and ignored (spam-resistant). Idempotent across restarts:
  * a fully-claimed record never re-claims; a blocked/failed one retries on
- * re-delivery.
+ * re-delivery. A new statement that re-uses a settled payment id (a till
+ * re-presenting an already-paid sale) is refused and recorded as a separate
+ * `duplicate` line item — never claimed.
  *
  * Pure-ish core — all I/O (host statement source, claim engine, persistence) is
  * injected, so the whole pipeline is unit-tested with the real ECIES decrypt.
@@ -63,6 +66,19 @@ export interface OrchestratorDeps {
    */
   sessionStartMs: number;
   persist: (record: PaymentRecord) => Promise<void>;
+  /**
+   * Called after every records-map mutation (pending insert, claim
+   * resolution, duplicate line) so the UI re-renders live instead of waiting
+   * for the end-of-page publish.
+   */
+  publish?: () => void;
+  /**
+   * Fired exactly once per never-seen-before payment id, right after its
+   * `pending` line item lands in `records` — drives the "New payment
+   * detected" toast. Re-deliveries and claim retries of a known id never
+   * re-fire it.
+   */
+  onPaymentDetected?: (record: PaymentRecord) => void;
   /** Counter + diagnostic for ignored decrypt/decode failures on watched topics (spam metric). `reason` describes the stage and underlying error. */
   onDecodeFailure?: (topicHex: string, reason: string) => void;
   now?: () => number;
@@ -121,8 +137,59 @@ export async function ingestStatement(
     return null;
   }
 
+  // Decode is complete — validate the amount before any dedupe/claim branch so
+  // a malformed payload is one decode-failure, not a path-dependent surprise.
+  let amountPlanck: bigint;
+  try {
+    amountPlanck = parseAmountToPlanck(amount, deps.tokenDecimals);
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    deps.onDecodeFailure?.(match.topicHex, `amount parse failed (${cause}; amount=${JSON.stringify(amount)})`);
+    return null;
+  }
+
+  const tsMs = Number(timestamp);
   const existing = deps.records.get(id);
-  if (existing && existing.claimStatus === "claimed") return existing; // idempotent on settled claim
+  if (existing && existing.claimStatus === "claimed") {
+    // The settled statement itself, re-delivered by statement-store gossip
+    // (identical payload timestamp) — idempotent, silent.
+    if (existing.timestampMs === tsMs) return existing;
+
+    // A NEW statement re-using a settled payment id: the till re-presented an
+    // already-paid sale and a customer tapped it again. Refuse the claim (the
+    // sale was already taken) but surface it as its own history line so the
+    // merchant sees the refused tap and rings up a fresh sale. Keyed by
+    // (id, payload timestamp): gossip re-deliveries of the duplicate statement
+    // collapse onto one record, idempotent across restarts. Deliberately ahead
+    // of the stale-backlog gate — no host call is at stake and an old
+    // double-tap is still worth surfacing once.
+    const dupId = `${id}::dup::${tsMs}`;
+    const knownDup = deps.records.get(dupId);
+    if (knownDup) return knownDup;
+
+    console.log(
+      `[v2:duplicate] id=${JSON.stringify(id)} re-presented with timestamp=${tsMs} ` +
+        `(settled statement was ${existing.timestampMs}); coins NOT claimed`,
+    );
+    const dup: PaymentRecord = {
+      id: dupId,
+      terminalId: match.terminal.terminalId,
+      topicHex: match.topicHex,
+      amount,
+      amountPlanck: amountPlanck.toString(),
+      coinsCount: coins.length,
+      timestampMs: tsMs,
+      firstSeenAtMs: deps.now?.() ?? Date.now(),
+      claimStatus: "duplicate",
+      claimDiagnostic: `repeat of payment ${id} — that sale was already settled; coins not claimed`,
+      duplicateOfId: id,
+      source: "v2",
+    };
+    deps.records.set(dupId, dup);
+    deps.publish?.();
+    await deps.persist(dup);
+    return dup;
+  }
 
   // Stale-backlog skip: a fresh subscription delivers everything in the local
   // node's gossip-retention window (minutes-to-hours of statements), and the
@@ -130,7 +197,6 @@ export async function ingestStatement(
   // Calling `topUp` against them produces a cascade of host-rejection
   // responses — currently each hangs for 30s because the rejection variant
   // isn't in the SDK's codec — so we cut them off before the claim path.
-  const tsMs = Number(timestamp);
   if (tsMs < deps.sessionStartMs) {
     console.log(
       `[v2:skip] stale backlog id=${JSON.stringify(id)} timestamp=${tsMs} ` +
@@ -152,13 +218,33 @@ export async function ingestStatement(
     return null;
   }
 
-  let amountPlanck: bigint;
-  try {
-    amountPlanck = parseAmountToPlanck(amount, deps.tokenDecimals);
-  } catch (error) {
-    const cause = error instanceof Error ? error.message : String(error);
-    deps.onDecodeFailure?.(match.topicHex, `amount parse failed (${cause}; amount=${JSON.stringify(amount)})`);
-    return null;
+  // The merchant sees the tap the moment it decodes: a `pending` line item
+  // lands before the claim round-trip (up to 30s × attempts), then resolves
+  // in place to claimed/failed/blocked below. In-memory only — a crash
+  // mid-claim must rehydrate to the pre-claim state so the re-delivery +
+  // backlog semantics decide whether to retry, rather than tombstoning a
+  // forever-"pending" row in durable history.
+  const firstSeenAtMs = existing?.firstSeenAtMs ?? (deps.now?.() ?? Date.now());
+  const pending: PaymentRecord = {
+    id,
+    terminalId: match.terminal.terminalId,
+    topicHex: match.topicHex,
+    amount,
+    amountPlanck: amountPlanck.toString(),
+    coinsCount: coins.length,
+    timestampMs: tsMs,
+    firstSeenAtMs,
+    claimStatus: "pending",
+    claimDiagnostic: existing?.claimDiagnostic,
+    claimAttempts: existing?.claimAttempts,
+    source: "v2",
+  };
+  const isNewPayment = !existing;
+  deps.records.set(id, pending);
+  deps.publish?.();
+  if (isNewPayment) {
+    console.log(`[v2:detect] new payment id=${JSON.stringify(id)} amount=${amount} → pending (claim starting)`);
+    deps.onPaymentDetected?.(pending);
   }
 
   deps.inflight.add(id);
@@ -180,8 +266,8 @@ export async function ingestStatement(
     amount,
     amountPlanck: amountPlanck.toString(),
     coinsCount: coins.length,
-    timestampMs: Number(timestamp),
-    firstSeenAtMs: existing?.firstSeenAtMs ?? now,
+    timestampMs: tsMs,
+    firstSeenAtMs,
     claimStatus: result.status,
     claimDiagnostic:
       result.status === "claim_failed"
@@ -193,6 +279,7 @@ export async function ingestStatement(
     source: "v2",
   };
   deps.records.set(id, record);
+  deps.publish?.();
   await deps.persist(record);
   return record;
 }

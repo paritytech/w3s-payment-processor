@@ -159,8 +159,8 @@ function ZRow({ z, stream }: { z: ZHistoryEntry; stream: PaymentStream }) {
           </div>
           <DisplayIf condition={z.publishState === "conflict"}>
             <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--red)", lineHeight: 1.5 }}>
-              On-chain CID for this report doesn't match — another writer claimed the slot. The encrypted
-              report stays unreadable to them; retry to confirm.
+              Slot Z·{String(z.seq).padStart(4, "0")} was claimed by another writer — the encrypted report
+              stays unreadable to them. Retry republishes it under the next free report number.
             </div>
           </DisplayIf>
           <DisplayIf condition={showTx}>

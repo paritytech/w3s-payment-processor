@@ -3,14 +3,16 @@
 
 /**
  * One statement row in the unified stream. Shows a colored lifecycle pill
- * (detected → finalizing → confirmed) and a v1/v2 source tag. Tapping the row
- * opens the payment detail sheet; the check-off tick (v1) stops propagation so
- * it doesn't also open the sheet.
+ * (detected → finalizing → confirmed) and a v1/v2 source tag; a duplicate row
+ * (re-presented settled payment id) carries an amber warning triangle. Tapping
+ * the row opens the payment detail sheet; the check-off tick (v1) stops
+ * propagation so it doesn't also open the sheet.
  */
 import { useState } from "react";
 
 import { fmtTime } from "@/shared/utils/ui-format.ts";
 import { Money } from "@/shared/components/Money.tsx";
+import { Icon } from "@/shared/components/Icon.tsx";
 import { CheckToggle, TillDot } from "@/shared/components/indicators.tsx";
 import { PaymentStatusPill, SourceTag } from "@/features/dashboard/components/PaymentStatus.tsx";
 import type { StreamPayment } from "@/features/dashboard/types.ts";
@@ -61,6 +63,14 @@ export function PaymentRow({
         <span style={{ fontSize: 13.5, color: "var(--text-2)", fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</span>
         <SourceTag source={p.source} />
       </span>
+      {p.duplicate ? (
+        <span
+          title="This payment ID has already been processed — ring up a new sale"
+          style={{ display: "inline-flex", color: "var(--amber)", flex: "0 0 auto" }}
+        >
+          <Icon name="alert" size={15} stroke={2} />
+        </span>
+      ) : null}
       {mobile ? <PaymentStatusPill status={p.status} dotOnly /> : <PaymentStatusPill status={p.status} />}
       <Money value={p.amount} size="sm" />
       <span style={{ width: mobile ? 30 : 92, flex: "0 0 auto", display: "flex", justifyContent: "flex-end" }}>
