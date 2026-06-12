@@ -1,9 +1,11 @@
 /**
  * Merchant-selectable chain transport. Covers the persisted host/rpc choice,
  * the per-transport PAPI client cache (switching must rebuild clients, not
- * reuse host-bridge ones), stale-client reaping, and the remote-origin
- * permission gate: the host's "allow web domain" prompt must fire only on the
- * direct-RPC transport, never on plain host-network boots.
+ * reuse host-bridge ones), stale-client reaping, the remote-origin permission
+ * gate (the host's "allow web domain" prompt must fire only on the direct-RPC
+ * transport), and the no-fallback invariant: in-host bridge providers never
+ * get a raw-WS fallback — the sandbox denies those origins with a synchronous
+ * constructor throw ("Network access is not allowed").
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -12,6 +14,7 @@ interface FakeProvider {
   url?: string;
   genesis?: string;
   fallback?: FakeProvider;
+  websocketClass?: unknown;
 }
 
 interface FakeClient {
@@ -36,10 +39,14 @@ vi.mock("polkadot-api", () => ({
   },
 }));
 vi.mock("@polkadot-api/ws-provider", () => ({
-  getWsProvider: (url: string): FakeProvider => ({ kind: "ws", url }),
+  getWsProvider: (url: string, config?: { websocketClass?: unknown }): FakeProvider => ({
+    kind: "ws",
+    url,
+    websocketClass: config?.websocketClass,
+  }),
 }));
 vi.mock("@/shared/api/host/host-api.ts", () => ({
-  createPapiProvider: (genesis: string, fallback: FakeProvider): FakeProvider => ({
+  createPapiProvider: (genesis: string, fallback?: FakeProvider): FakeProvider => ({
     kind: "papi",
     genesis,
     fallback,
@@ -63,6 +70,7 @@ import {
   requestChainRemotePermissions,
   resetClientCache,
 } from "@/shared/api/client.ts";
+import { SandboxSafeWebSocket } from "@/shared/api/sandbox-safe-websocket.ts";
 import { envConfig } from "@/config.ts";
 
 function fakeLocalStorage(seed: Record<string, string> = {}): Storage {
@@ -116,19 +124,34 @@ describe("chain-transport store", () => {
 });
 
 describe("client transport routing", () => {
-  it("routes through the host bridge on host, straight WS on rpc, cached per transport", () => {
+  it("routes through the host bridge with no ws fallback in-host, shimmed WS on rpc, cached per transport", () => {
     setChainTransport("host");
     const hostClient = mainChainClient() as unknown as FakeClient;
     expect(hostClient.provider.kind).toBe("papi");
     expect(hostClient.provider.genesis).toBe(envConfig.network.mainChain.genesisHash);
-    expect(hostClient.provider.fallback?.kind).toBe("ws");
+    expect(hostClient.provider.fallback).toBeUndefined();
     expect(mainChainClient() as unknown as FakeClient).toBe(hostClient);
 
     setChainTransport("rpc");
     const rpcClient = mainChainClient() as unknown as FakeClient;
     expect(rpcClient).not.toBe(hostClient);
-    expect(rpcClient.provider).toEqual({ kind: "ws", url: envConfig.network.mainChain.wsUrl });
+    expect(rpcClient.provider).toEqual({
+      kind: "ws",
+      url: envConfig.network.mainChain.wsUrl,
+      websocketClass: SandboxSafeWebSocket,
+    });
     expect(mainChainClient() as unknown as FakeClient).toBe(rpcClient);
+  });
+
+  it("uses a plain direct-WS provider in standalone tabs, even on the host transport", () => {
+    isInHostMock.mockReturnValue(false);
+    setChainTransport("host");
+    const client = mainChainClient() as unknown as FakeClient;
+    expect(client.provider).toEqual({
+      kind: "ws",
+      url: envConfig.network.mainChain.wsUrl,
+      websocketClass: undefined,
+    });
   });
 
   it("dropStaleTransportClients reaps only the inactive transport's clients", () => {

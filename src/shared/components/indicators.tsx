@@ -138,10 +138,32 @@ export function TillDot({ id, size = 7 }: { id: string; size?: number }) {
   return <span style={{ width: size, height: size, borderRadius: "50%", background: tillColor(id), flex: "0 0 auto" }} />;
 }
 
-export function Toast({ msg, t = "neutral" }: { msg?: string; t?: Tone }) {
-  if (!msg) return null;
+export interface ToastContent {
+  msg: string;
+  tone?: Tone;
+}
+
+const TOAST_DISMISS_MS = 3000;
+
+/**
+ * Bottom-anchored transient toast. Owns its lifetime: auto-dismisses 3s after
+ * each flash (keyed on `toast` object identity, so re-flashing the same text
+ * re-arms the timer) and dismisses immediately on tap. `onDismiss` is the
+ * single state-clearing path back to the producer.
+ */
+export function Toast({ toast, onDismiss }: { toast?: ToastContent | null; onDismiss: () => void }) {
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(onDismiss, TOAST_DISMISS_MS);
+    return () => clearTimeout(timer);
+  }, [toast, onDismiss]);
+
+  if (!toast) return null;
   return (
     <div
+      role="status"
+      aria-live="polite"
+      onClick={onDismiss}
       style={{
         position: "absolute",
         bottom: 18,
@@ -161,10 +183,11 @@ export function Toast({ msg, t = "neutral" }: { msg?: string; t?: Tone }) {
         color: "var(--text-1)",
         animation: "pay-row-in .25s ease",
         maxWidth: "88%",
+        cursor: "pointer",
       }}
     >
-      <span style={{ width: 7, height: 7, borderRadius: "50%", background: tone(t).solid, flex: "0 0 auto" }} />
-      {msg}
+      <span style={{ width: 7, height: 7, borderRadius: "50%", background: tone(toast.tone ?? "neutral").solid, flex: "0 0 auto" }} />
+      {toast.msg}
     </div>
   );
 }
@@ -173,8 +196,8 @@ export function Toast({ msg, t = "neutral" }: { msg?: string; t?: Tone }) {
  * Top-anchored connection toast: a spinner + "Connecting…" while the processor
  * opens its network subscription, flipping to a "Connected" tick that
  * auto-dismisses once we're live. Driven entirely by the derived ConnState so
- * it tracks the real monitor lifecycle. `busy` suppresses it while a full-screen
- * state takeover (syncing / problem) already owns the moment.
+ * it tracks the real monitor lifecycle. Tap hides it until the next state
+ * change. `busy` suppresses it while a full-screen
  */
 export function ConnToast({ conn, busy = false }: { conn: ConnState; busy?: boolean }) {
   const [phase, setPhase] = useState<"connecting" | "connected" | "hidden">(conn === "connecting" ? "connecting" : "hidden");
@@ -208,6 +231,10 @@ export function ConnToast({ conn, busy = false }: { conn: ConnState; busy?: bool
     <div
       role="status"
       aria-live="polite"
+      onClick={() => {
+        clearTimeout(dismiss.current);
+        setPhase("hidden");
+      }}
       style={{
         position: "absolute",
         top: 14,
@@ -227,6 +254,7 @@ export function ConnToast({ conn, busy = false }: { conn: ConnState; busy?: bool
         color: "var(--text-1)",
         animation: "pay-row-in .25s ease",
         maxWidth: "88%",
+        cursor: "pointer",
       }}
     >
       <Icon

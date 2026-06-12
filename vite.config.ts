@@ -31,7 +31,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["tests/**/*.test.ts"],
+    include: ["tests/**/*.test.{ts,tsx}"],
     env: {
       // config.ts throws at module load when this is unset (no defensible
       // default — a hardcoded value would silently mis-credit v2 claims in

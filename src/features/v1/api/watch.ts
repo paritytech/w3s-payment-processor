@@ -290,7 +290,8 @@ export async function startV1Watch(deps: V1WatchDeps, checkpoint: number | undef
     if (deps.backfillWsUrl) {
       const { createClient } = await import("polkadot-api");
       const { getWsProvider } = await import("@polkadot-api/ws-provider");
-      backfillClient = createClient(getWsProvider(deps.backfillWsUrl));
+      const { sandboxSafeWsConfig } = await import("@/shared/api/sandbox-safe-websocket.ts");
+      backfillClient = createClient(getWsProvider(deps.backfillWsUrl, sandboxSafeWsConfig()));
       wdbg(`backfill: using direct WS client → ${deps.backfillWsUrl}`);
     }
     const scanClient = backfillClient ?? client;

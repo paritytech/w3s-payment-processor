@@ -38,6 +38,7 @@
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^5.0.4",
     "bulletin-deploy": "^0.10.0",
+    "happy-dom": "^20.10.2",
     "qrcode": "^1.5.4",
     "tsx": "^4.21.0",
     "typescript": "^5",

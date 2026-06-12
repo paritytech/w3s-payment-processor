@@ -6,10 +6,12 @@
  * immediate `pending` line item (+ detection event) → claim (per-terminal
  * binding gate) → resolve in place + persist. Decrypt/decode failures on open
  * topics are counted and ignored (spam-resistant). Idempotent across restarts:
- * a fully-claimed record never re-claims; a blocked/failed one retries on
- * re-delivery. A new statement that re-uses a settled payment id (a till
- * re-presenting an already-paid sale) is refused and recorded as a separate
- * `duplicate` line item — never claimed.
+ * claimed and failed records never re-enter the claim path — `topUp` fires at
+ * most one retry cycle per payment id, ever. Only a blocked claim (disabled
+ * engine — no topUp was ever issued) retries on re-delivery, so host
+ * sign-in/upgrade unblocks queued payments. A new statement that re-uses a
+ * settled payment id (a till re-presenting an already-paid sale) is refused
+ * and recorded as a separate `duplicate` line item — never claimed.
  *
  * Pure-ish core — all I/O (host statement source, claim engine, persistence) is
  * injected, so the whole pipeline is unit-tested with the real ECIES decrypt.
@@ -190,6 +192,15 @@ export async function ingestStatement(
     await deps.persist(dup);
     return dup;
   }
+
+  // A failed claim is terminal for this payment id: its coins already went
+  // through a full topUp retry cycle and may have been consumed on-chain even
+  // when the host's response was lost. Re-deliveries return the record as-is —
+  // without this, statement-store gossip would fire a fresh topUp cycle every
+  // few seconds for as long as the statement stays in the gossip window.
+  // Blocked claims (disabled engine — no topUp was ever issued) deliberately
+  // fall through and retry.
+  if (existing && existing.claimStatus === "claim_failed") return existing;
 
   // Stale-backlog skip: a fresh subscription delivers everything in the local
   // node's gossip-retention window (minutes-to-hours of statements), and the

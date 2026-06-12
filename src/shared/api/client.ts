@@ -7,11 +7,13 @@
  * The merchant-selectable chain transport (`shared/api/chain-transport.ts`)
  * decides how JSON-RPC reaches the chain:
  *
- * - `"host"` (default) — host-first: route PAPI JSON-RPC through the Polkadot
- *   host bridge with the direct WebSocket provider as the SDK fallback when a
- *   host does not advertise the requested chain (and in standalone tabs).
- *   This mirrors `w3spay-admin`'s balance reads while keeping the processor
- *   usable in a plain browser tab.
+ * - `"host"` (default) — in-host, route PAPI JSON-RPC through the Polkadot
+ *   host bridge with NO direct-WebSocket fallback: on this transport the RPC
+ *   origins are never allowlisted, so the SDK fallback (which engages on any
+ *   transient bridge drop, e.g. a WebView resume) could only ever crash with
+ *   the sandbox's "Network access is not allowed". A chain the host does not
+ *   advertise stays inert; the merchant fails over to Direct RPC. Standalone
+ *   tabs connect via direct WebSocket regardless of the stored transport.
  * - `"rpc"` — failover: bypass the host bridge and connect straight to the
  *   network's public WebSocket RPC endpoints.
  */
@@ -22,6 +24,7 @@ import { createClient, type PolkadotClient } from "polkadot-api";
 import { envConfig } from "@/config.ts"
 import { getChainTransport } from "@/shared/api/chain-transport.ts";
 import { isInHost, requestRemoteOriginPermission } from "@/shared/api/host/connection.ts";
+import { sandboxSafeWsConfig } from "@/shared/api/sandbox-safe-websocket.ts";
 
 const clientCache = new Map<string, PolkadotClient>();
 
@@ -33,8 +36,10 @@ export function getOrCreateClient(
   const transport = getChainTransport();
   const cacheKey = `${genesis}:${transport}`;
   if (clientCache.has(cacheKey)) return clientCache.get(cacheKey)!;
-  const wsProvider = getWsProvider(wsUrl);
-  const provider = transport === "rpc" ? wsProvider : createPapiProvider(genesis, wsProvider);
+  const provider =
+    transport === "rpc" || !isInHost()
+      ? getWsProvider(wsUrl, sandboxSafeWsConfig())
+      : createPapiProvider(genesis);
   const client = createClient(provider);
   clientCache.set(cacheKey, client);
   return client;

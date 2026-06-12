@@ -107,7 +107,7 @@ export function RootNavigator() {
       <DisplayIf condition={mobile}>
         <TabBar tab={tab} setTab={setTab} unchecked={stream.unchecked} />
       </DisplayIf>
-      <Toast msg={stream.toast?.msg} t={stream.toast?.tone} />
+      <Toast toast={stream.toast} onDismiss={stream.dismissToast} />
       <ConnToast conn={stream.conn} busy={showSyncing || showProblem} />
     </div>
   );

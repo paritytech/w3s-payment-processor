@@ -69,10 +69,11 @@ export function ProtocolSettingsProvider({ children }: { children: ReactNode }) 
     if (next === getChainTransport()) return;
     applyChainTransport(next);
     dropStaleTransportClients();
-    // No-op on "host"; on "rpc" it prompts the host for WS access right at the
-    // switch (deduped with the engine-restart request via the in-flight cache).
-    void requestChainRemotePermissions();
-    setTransport(next);
+    // Engines restart on setTransport; await the in-host "rpc" origin grant
+    // first so the initial WS connect cannot race the permission modal.
+    void requestChainRemotePermissions().then(() => {
+      if (getChainTransport() === next) setTransport(next);
+    });
   };
 
   const value = useMemo<ProtocolSettingsValue>(

@@ -25,7 +25,7 @@ export async function loadRecords(kv: KvStore): Promise<Map<string, PaymentRecor
 
 /**
  * Insert or update a record. New ids are appended to the index; existing ids
- * (a re-claim after a blocked/failed attempt) only rewrite the item.
+ * (a re-claim after a blocked attempt) only rewrite the item.
  */
 export async function upsertRecord(kv: KvStore, record: PaymentRecord): Promise<void> {
   const ids = (await kv.getJSON<string[]>(RECORDS_INDEX_KEY)) ?? [];

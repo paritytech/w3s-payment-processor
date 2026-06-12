@@ -30,6 +30,14 @@ export function readInt(key: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+/** 0..1 sampling rate; explicit "0" is honored (disables sampling), out-of-range or unparseable falls back. */
+export function readSampleRate(key: string, fallback: number): number {
+  const value = import.meta.env[key];
+  if (typeof value !== "string" || value.trim() === "") return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : fallback;
+}
+
 export function readBigInt(key: string, fallback: bigint): bigint {
   const value = import.meta.env[key];
   if (typeof value !== "string" || value.trim() === "") return fallback;

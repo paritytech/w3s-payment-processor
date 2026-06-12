@@ -30,6 +30,14 @@ import { indexTerminalsByTopic, ingestPage, type OrchestratorDeps } from "@/feat
 import { loadRecords, upsertRecord } from "@/features/v2/api/records.ts";
 import { useV2Store, type HostAccountUiState, type HostSignInStatus } from "@/features/v2/store/useV2Store.ts";
 import type { PaymentRecord } from "@/features/v2/types.ts";
+import {
+  instrumentClaimEngine,
+  instrumentTopUpManager,
+  recordDecodeFailure,
+  recordHostUnreachable,
+  recordPaymentRecord,
+} from "@/features/v2/api/telemetry.ts";
+import { breadcrumb, captureError } from "@/shared/utils/telemetry/index.ts";
 
 export interface V2MonitorHandle {
   stop(): void;
@@ -101,12 +109,12 @@ export async function startV2Monitor(terminals: ResolvedV2Terminal[], signal?: A
     const records = await loadRecords(kv);
     const inHost = isInHost();
     let binding = checkWalletBinding(null, terminals);
-    let claimEngine = resolveClaimEngine({
+    let claimEngine = instrumentClaimEngine(resolveClaimEngine({
       inHost,
       bindingEnabled: false,
       bindingReason: inHost ? "Checking Polkadot host product account…" : STANDALONE_NOTICE,
-      createManager: (): CoinsTopUpManager => createPaymentManager(sandboxTransport),
-    });
+      createManager: (): CoinsTopUpManager => instrumentTopUpManager(createPaymentManager(sandboxTransport)),
+    }));
 
     const publishRecords = (): void => {
       useV2Store.setState({ records: [...records.values()], decodeFailures });
@@ -126,15 +134,19 @@ export async function startV2Monitor(terminals: ResolvedV2Terminal[], signal?: A
       `session start watermark = ${sessionStartMs} (${new Date(sessionStartMs).toISOString()}); ` +
         `statements with payload timestamp older than this will be skipped as backlog`,
     );
+    const terminalsByTopic = indexTerminalsByTopic(terminals);
     const deps: OrchestratorDeps = {
-      terminalsByTopic: indexTerminalsByTopic(terminals),
+      terminalsByTopic,
       claimEngine,
       binding,
       tokenDecimals: envConfig.token.decimals,
       records,
       inflight,
       sessionStartMs,
-      persist: (record: PaymentRecord) => upsertRecord(kv, record),
+      persist: (record: PaymentRecord) => {
+        recordPaymentRecord(record);
+        return upsertRecord(kv, record);
+      },
       // Live UI: re-publish on every record mutation (pending → resolved) so a
       // row appears the instant a tap decodes, not at end-of-page.
       publish: publishRecords,
@@ -153,6 +165,7 @@ export async function startV2Monitor(terminals: ResolvedV2Terminal[], signal?: A
       onDecodeFailure: (topicHex, reason) => {
         decodeFailures += 1;
         dbg(`decode-failure on ${topicHex.slice(0, 8)}…: ${reason}`);
+        recordDecodeFailure(topicHex, reason, terminalsByTopic.get(topicHex)?.terminalId ?? "unknown");
       },
     };
 
@@ -162,12 +175,12 @@ export async function startV2Monitor(terminals: ResolvedV2Terminal[], signal?: A
     ): void => {
       binding = checkWalletBinding(status.publicKey, terminals);
       const bindingReason = status.kind === "ready" ? binding.reason : status.message;
-      claimEngine = resolveClaimEngine({
+      claimEngine = instrumentClaimEngine(resolveClaimEngine({
         inHost,
         bindingEnabled: binding.claimsEnabled,
         bindingReason,
-        createManager: (): CoinsTopUpManager => createPaymentManager(sandboxTransport),
-      });
+        createManager: (): CoinsTopUpManager => instrumentTopUpManager(createPaymentManager(sandboxTransport)),
+      }));
       deps.binding = binding;
       deps.claimEngine = claimEngine;
 
@@ -190,6 +203,8 @@ export async function startV2Monitor(terminals: ResolvedV2Terminal[], signal?: A
           ` bound=${binding.boundTerminalIds.size}/${terminals.length}` +
           (bindingReason ? ` reason="${bindingReason}"` : ""),
       );
+      breadcrumb("host account", { "host.status": status.kind }, "app", status.kind === "ready" ? "info" : "warning");
+      if (status.kind === "host-unreachable") recordHostUnreachable(status.message ?? "host unreachable");
     };
 
     const subscribeStatements = (): void => {
@@ -215,6 +230,7 @@ export async function startV2Monitor(terminals: ResolvedV2Terminal[], signal?: A
         "v2:subscribe",
         "ok",
       );
+      breadcrumb("v2 statements subscribed", { "topics.count": terminals.length });
       statementSubscription = subscribeStatementTopics(topics, (page) => {
         void (async () => {
           const before = decodeFailures;
@@ -224,6 +240,7 @@ export async function startV2Monitor(terminals: ResolvedV2Terminal[], signal?: A
           } catch (error) {
             useV2Store.setState({ error: errMessage(error) });
             dbg(`page error: ${errMessage(error)}`);
+            captureError(error, { component: "v2-engine", phase: "ingest-page" });
           } finally {
             publishRecords();
           }
@@ -359,6 +376,7 @@ export async function startV2Monitor(terminals: ResolvedV2Terminal[], signal?: A
   } catch (error) {
     dbg(`fatal: ${errMessage(error)}`, "v2:fatal", "error");
     useV2Store.setState({ status: "error", error: errMessage(error) });
+    captureError(error, { component: "v2-engine", phase: "fatal" });
   }
 
   return handle;

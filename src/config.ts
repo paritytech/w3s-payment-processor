@@ -6,6 +6,7 @@ import {
   readBigInt,
   readBool,
   readInt,
+  readSampleRate,
   readString,
   readStringRequired,
 } from "./shared/utils/env.ts";
@@ -89,7 +90,7 @@ function readEnv() {
     telemetry: {
       dsn: (import.meta.env.VITE_SENTRY_DSN ?? "").trim(),
       environment: import.meta.env.VITE_SENTRY_ENV ?? import.meta.env.MODE,
-      tracesSampleRate: Number(import.meta.env.VITE_SENTRY_TRACES_SAMPLE_RATE ?? "1") || 1,
+      tracesSampleRate: readSampleRate("VITE_SENTRY_TRACES_SAMPLE_RATE", 1),
     },
   };
 }

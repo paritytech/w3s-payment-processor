@@ -20,6 +20,7 @@ import {
 } from "@/shared/api/host/host-api.ts";
 import { topicKey } from "@/shared/utils/wire/topic.ts";
 import { unwrapVecPrefixIfPresent } from "@/shared/utils/wire/scale.ts";
+import { breadcrumb, captureError } from "@/shared/utils/telemetry/index.ts";
 
 /**
  * Subscribe to a set of statement-store topics. The callback fires with each
@@ -59,6 +60,8 @@ export const subscribeStatementTopics: SubscribeStatementTopics = (topics, onPag
   });
   sub.onInterrupt(() => {
     console.warn("[v2:stmt] subscription interrupted by host");
+    breadcrumb("statement subscription interrupted", undefined, "app", "warning");
+    captureError(new Error("host interrupted statement subscription"), { component: "statement-store" });
   });
   return {
     ...sub,

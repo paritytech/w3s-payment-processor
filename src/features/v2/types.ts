@@ -31,7 +31,7 @@ export interface PaymentRecord {
   firstSeenAtMs: number;
   claimStatus: ClaimStatus;
   claimDiagnostic?: string;
-  /** Cumulative topUp attempts across all deliveries of this payment. */
+  /** topUp attempts made by the single claim cycle that ran for this payment (failed claims are terminal — never re-claimed). */
   claimAttempts?: number;
   claimedAtMs?: number;
   /**

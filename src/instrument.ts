@@ -18,9 +18,8 @@ import { requestRemoteOriginPermission, requestRemotePermission } from "@/shared
 import { requestChainRemotePermissions } from "@/shared/api/client.ts";
 import { initTelemetry } from "@/shared/utils/telemetry/init.ts";
 import { sentryRemoteOrigins } from "@/shared/utils/telemetry/origins.ts";
-
 if (envConfig.telemetry.dsn) {
-  initTelemetry(envConfig.telemetry);
+  initTelemetry({ ...envConfig.telemetry, app: "w3s-payment-processor"});
 }
 
 

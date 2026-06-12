@@ -552,8 +552,8 @@ describe("ingestStatement — coin secret length contract (regression)", () => {
   });
 });
 
-describe("ingestStatement — retry accounting", () => {
-  it("accumulates topUp attempts across re-deliveries and says so in the record", async () => {
+describe("ingestStatement — failed claims are terminal", () => {
+  it("never re-fires topUp for a payment id whose claim already failed (in-session and across a restart)", async () => {
     const terminal = makeTerminal(TOPIC_HEX, "t1");
     const records = new Map<string, PaymentRecord>();
     const deps = (claimEngine: ClaimEngine) => ({
@@ -581,15 +581,18 @@ describe("ingestStatement — retry accounting", () => {
     expect(first).toMatchObject({ claimStatus: "claim_failed", claimAttempts: 3 });
     expect(first!.claimDiagnostic).toBe("failed after 3 attempts — host busy");
 
-    // Gossip re-delivers; still down — the record now says 6 tries in total.
-    const second = await ingestStatement(statement, deps(failing));
-    expect(second).toMatchObject({ claimStatus: "claim_failed", claimAttempts: 6 });
-    expect(second!.claimDiagnostic).toBe("failed after 6 attempts — host busy");
+    // Gossip re-delivers — even with a recovered host, the failed record is
+    // returned as-is and topUp is never called again for this payment id.
+    const recoveredTopUp = vi.fn(async () => undefined);
+    const recovered = createCoinsClaimEngine({ topUp: recoveredTopUp });
+    const second = await ingestStatement(statement, deps(recovered));
+    expect(second).toBe(first);
+    expect(second).toMatchObject({ claimStatus: "claim_failed", claimAttempts: 3 });
+    expect(recoveredTopUp).not.toHaveBeenCalled();
 
-    // Host recovers on the next re-delivery: claimed, history preserved.
-    const recovered = createCoinsClaimEngine({ topUp: async () => undefined });
-    const third = await ingestStatement(statement, deps(recovered));
-    expect(third).toMatchObject({ claimStatus: "claimed", claimAttempts: 7 });
-    expect(third!.claimDiagnostic).toBeUndefined();
+    // Simulated restart: rehydrated records map, fresh deps — still terminal.
+    const third = await ingestStatement(statement, { ...deps(recovered), records: new Map(records) });
+    expect(third).toMatchObject({ claimStatus: "claim_failed", claimAttempts: 3 });
+    expect(recoveredTopUp).not.toHaveBeenCalled();
   });
 });

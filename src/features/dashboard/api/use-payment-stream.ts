@@ -93,6 +93,8 @@ export interface PaymentStream {
   zHistory: ZHistoryEntry[];
   periodLabel: string;
   toast: StreamToast | null;
+  /** Clears the active toast; the Toast component calls this on tap and on its 3s auto-dismiss. */
+  dismissToast: () => void;
   toggleCheck: (id: string) => void;
   checkAll: () => void;
   closeOut: () => void;
@@ -116,12 +118,10 @@ export function usePaymentStream(): PaymentStream {
   const [toast, setToast] = useState<StreamToast | null>(null);
   // Fiscal X stamp from the last "Update" press; cleared when a Z closes the period.
   const [xStamp, setXStamp] = useState<XReportStamp | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const flash = useCallback((msg: string, t: Tone = "neutral") => {
     setToast({ msg, tone: t });
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => setToast(null), 2600);
   }, []);
+  const dismissToast = useCallback(() => setToast(null), []);
 
   const terminals = useMemo<StreamTerminal[]>(() => {
     const seen = new Set<string>();
@@ -398,6 +398,7 @@ export function usePaymentStream(): PaymentStream {
     zHistory,
     periodLabel,
     toast,
+    dismissToast,
     toggleCheck,
     checkAll,
     closeOut,

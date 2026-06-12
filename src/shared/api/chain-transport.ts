@@ -4,9 +4,9 @@
 /**
  * Chain transport selection — how PAPI JSON-RPC reaches the chains.
  *
- * - `"host"` — route through the Polkadot host bridge (`createPapiProvider`),
- *   with the direct WebSocket provider as the SDK-level fallback when the
- *   host does not advertise the requested chain (and in standalone tabs).
+ * - `"host"` — in-host, route through the Polkadot host bridge
+ *   (`createPapiProvider`) with no WebSocket fallback (the sandbox denies
+ *   non-allowlisted origins); standalone tabs connect via direct WebSocket.
  * - `"rpc"` — bypass the host bridge and connect straight to the public
  *   WebSocket RPC endpoints from `networks.ts`.
  *
