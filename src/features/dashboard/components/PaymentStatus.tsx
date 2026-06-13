@@ -10,7 +10,6 @@ const STATUS_META: Record<PaymentLifecycle, { label: string; tone: Tone }> = {
   finalizing: { label: "Finalizing", tone: "blue" },
   confirmed: { label: "Confirmed", tone: "green" },
   failed: { label: "Failed", tone: "red" },
-  duplicate: { label: "Duplicate", tone: "amber" },
 };
 
 export function statusLabel(status: PaymentLifecycle): string {

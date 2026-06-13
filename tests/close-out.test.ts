@@ -3,8 +3,7 @@
  * AND coin (statement) payments by wall-clock window since the last Z —
  * "it matters only about the amount that we record", not the rail. Claim
  * status is operational, not fiscal: blocked/failed coin payments still
- * count, matching the dashboard's running totals. `duplicate` records are the
- * exception — a refused re-tap of a settled sale moved no money.
+ * count, matching the dashboard's running totals.
  */
 import { describe, expect, it } from "vitest";
 
@@ -123,18 +122,6 @@ describe("buildCombinedSnapshot", () => {
     });
     expect(snapshot.count).toBe(3);
     expect(snapshot.grandTotalPlanck).toBe("60");
-  });
-
-  it("excludes duplicate records — a refused re-tap of a settled sale moved no money", () => {
-    const dup = { ...coinRecord("c-1::dup::99", "tap-1", "10", 3_000, "duplicate"), duplicateOfId: "c-1" };
-    const { snapshot, v2Count } = buildCombinedSnapshot({
-      ...BASE,
-      v2Records: [coinRecord("c-1", "tap-1", "10", 2_000, "claimed"), dup],
-    });
-    expect(v2Count).toBe(1);
-    expect(snapshot.payments.map((p) => p.paymentId)).toEqual(["c-1"]);
-    expect(snapshot.grandTotalPlanck).toBe("10");
-    expect(snapshot.count).toBe(1);
   });
 
   it("merges both rails: v1 first (block-sorted), coins after (time-sorted); lines roll up per terminal", () => {

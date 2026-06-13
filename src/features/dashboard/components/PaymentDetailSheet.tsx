@@ -99,15 +99,6 @@ export function PaymentDetailSheet({
           </button>
         </div>
 
-        {payment.duplicate ? (
-          <div style={{ display: "flex", gap: 10, alignItems: "flex-start", margin: "14px 20px 4px", padding: "12px 14px", borderRadius: "var(--radius-md)", background: "var(--amber-bg)", color: "var(--amber-fg)", fontSize: 13, lineHeight: 1.45 }}>
-            <Icon name="alert" size={16} stroke={2} style={{ marginTop: 1, flex: "0 0 auto" }} />
-            <span>
-              This payment ID has already been processed — this tap was <strong>not</strong> charged
-              and no coins were claimed. Ring up a new sale to take the payment.
-            </span>
-          </div>
-        ) : null}
         <Field label="Status">{statusLabel(payment.status)}</Field>
         <Field label="Type">
           <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>

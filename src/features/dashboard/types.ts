@@ -16,9 +16,8 @@ export interface StreamTerminal {
  *  - `finalizing` — in the best chain, finality pending (blue)  [v2: claim pending]
  *  - `confirmed`  — finalized (green)                            [v2: claim settled]
  *  - `failed`     — v2 claim blocked/failed (red); v1 never fails
- *  - `duplicate`  — v2 statement re-used a settled payment id; refused, not charged (amber)
  */
-export type PaymentLifecycle = "detected" | "finalizing" | "confirmed" | "failed" | "duplicate";
+export type PaymentLifecycle = "detected" | "finalizing" | "confirmed" | "failed";
 
 /**
  * One row in the unified payment stream. Both monitor paths fold into this
@@ -44,12 +43,6 @@ export interface StreamPayment {
   payerHex?: string;
   coinsCount?: number;
   claimNote?: string;
-  /**
-   * v2: a re-presented, already-settled payment id. The row shows the refused
-   * tap (warning triangle); `amount` is what the tap carried, NOT money
-   * received — rollups skip these. `reference` is the original payment id.
-   */
-  duplicate?: boolean;
 }
 
 export interface TerminalTotal {

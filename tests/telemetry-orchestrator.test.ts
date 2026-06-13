@@ -154,36 +154,6 @@ describe("claim.pipeline telemetry — outcome attributes", () => {
     expect(pipelineSpan.attrs["pay.phase"]).toBe("failed");
   });
 
-  it("sets claim.outcome=duplicate on duplicate branch", async () => {
-    const terminal = makeTerminal(TOPIC_HEX, "t4");
-    const records = new Map<string, PaymentRecord>();
-
-    // First: claim it
-    await ingestStatement(
-      { topics: [terminal.topic], data: envelopeFor(terminal, basePayload) },
-      { ...baseDeps(terminal, records), claimEngine: createCoinsClaimEngine({ topUp: vi.fn(async () => undefined) }) },
-    );
-
-    // Reset span mocks for duplicate assertion
-    vi.clearAllMocks();
-    pipelineSpan = makeSpan();
-    submitSpan = makeSpan();
-    mockStartSpan.mockImplementation((opts: { op?: string }, cb: (s: SpanStub) => unknown) => {
-      const span = opts.op === "claim.submit" ? submitSpan : pipelineSpan;
-      return cb(span);
-    });
-
-    // Second: same id, different timestamp (re-tap)
-    const retap: W3sPaymentDataV1 = { ...basePayload, timestamp: 1_700_000_060_000n };
-    await ingestStatement(
-      { topics: [terminal.topic], data: envelopeFor(terminal, retap) },
-      { ...baseDeps(terminal, records), claimEngine: createCoinsClaimEngine({ topUp: vi.fn(async () => undefined) }) },
-    );
-
-    expect(pipelineSpan.attrs["claim.outcome"]).toBe("duplicate");
-    expect(pipelineSpan.attrs["pay.phase"]).toBe("duplicate");
-  });
-
   it("calls captureWarning on decrypt failure (spam path)", async () => {
     const terminal = makeTerminal(TOPIC_HEX, "t5");
     const onDecodeFailure = vi.fn();
