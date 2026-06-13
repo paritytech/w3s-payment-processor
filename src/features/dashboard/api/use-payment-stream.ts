@@ -17,7 +17,7 @@ import type { ConnState } from "@/shared/components/indicators.tsx";
 import type { Tone } from "@/shared/utils/tone.ts";
 import type { HostAccountUiState, V2Status } from "@/features/v2/store/useV2Store.ts";
 import type { V1CatchupProgress } from "@/features/v1/store/useV1Store.ts";
-import type { ClaimStatus } from "@/features/v2/types.ts";
+import { v2PaymentKey, type ClaimStatus } from "@/features/v2/types.ts";
 
 import type { PaymentLifecycle, StreamPayment, StreamTerminal, StreamTotals, TerminalTotal, XReportStamp, ZHistoryEntry } from "@/features/dashboard/types.ts";
 
@@ -35,7 +35,6 @@ function v1Lifecycle(blockNumber: number, scannedHead: number, confirmedHead: nu
 function v2Lifecycle(claimStatus: ClaimStatus): PaymentLifecycle {
   if (claimStatus === "claimed") return "confirmed";
   if (claimStatus === "pending") return "finalizing";
-  if (claimStatus === "duplicate") return "duplicate";
   return "failed";
 }
 
@@ -93,6 +92,7 @@ export interface PaymentStream {
   zHistory: ZHistoryEntry[];
   periodLabel: string;
   toast: StreamToast | null;
+  dismissToast: () => void;
   toggleCheck: (id: string) => void;
   checkAll: () => void;
   closeOut: () => void;
@@ -117,12 +117,43 @@ export function usePaymentStream(): PaymentStream {
   // Fiscal X stamp from the last "Update" press; cleared when a Z closes the period.
   const [xStamp, setXStamp] = useState<XReportStamp | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const flash = useCallback((msg: string, t: Tone = "neutral") => {
-    setToast({ msg, tone: t });
+  const toastSource = useRef<"payment" | "other" | null>(null);
+  const toastEpoch = useRef(0);
+  const dismissToast = useCallback(() => {
+    toastEpoch.current += 1;
     clearTimeout(timer.current);
-    timer.current = setTimeout(() => setToast(null), 2600);
+    timer.current = undefined;
+    toastSource.current = null;
+    setToast(null);
   }, []);
-
+  const flash = useCallback((msg: string, t: Tone = "neutral") => {
+    const epoch = toastEpoch.current + 1;
+    toastEpoch.current = epoch;
+    clearTimeout(timer.current);
+    toastSource.current = "other";
+    setToast({ msg, tone: t });
+    timer.current = setTimeout(() => {
+      timer.current = undefined;
+      toastSource.current = null;
+      if (toastEpoch.current === epoch) setToast(null);
+    }, 2600);
+  }, []);
+  const flashPayment = useCallback((msg: string) => {
+    if (timer.current !== undefined && toastSource.current === "payment") {
+      setToast({ msg, tone: "blue" });
+      return;
+    }
+    const epoch = toastEpoch.current + 1;
+    toastEpoch.current = epoch;
+    clearTimeout(timer.current);
+    toastSource.current = "payment";
+    setToast({ msg, tone: "blue" });
+    timer.current = setTimeout(() => {
+      timer.current = undefined;
+      toastSource.current = null;
+      if (toastEpoch.current === epoch) setToast(null);
+    }, 2600);
+  }, []);
   const terminals = useMemo<StreamTerminal[]>(() => {
     const seen = new Set<string>();
     const out: StreamTerminal[] = [];
@@ -140,17 +171,18 @@ export function usePaymentStream(): PaymentStream {
   }, [v1.terminals, config.v2.terminals]);
 
   // "New payment detected" toast — reacts only to detections that arrive
-  // after mount: the ref seeds with whatever the store already holds, so a
-  // remount (StrictMode, tab navigation) can't replay an old event.
-  const seenDetection = useRef(v2.lastDetection);
+  // after mount. Track the stable payment key, not the event object: duplicate
+  // monitor callbacks can write a fresh `lastDetection` object for the same
+  // payment. During a burst, update the message without extending the current
+  // timeout; otherwise continuous payments can keep the toast alive forever.
+  const seenDetectionKey = useRef(v2.lastDetection?.key);
   useEffect(() => {
     const det = v2.lastDetection;
-    if (!det || det === seenDetection.current) return;
-    seenDetection.current = det;
+    if (!det || det.key === seenDetectionKey.current) return;
+    seenDetectionKey.current = det.key;
     const till = terminals.find((t) => t.id === det.terminalId);
-    flash(`New payment detected — ${det.amount} ${envConfig.token.symbol} (${till?.name ?? det.terminalId})`, "blue");
-  }, [v2.lastDetection, terminals, flash]);
-
+    flashPayment(`New payment detected — ${det.amount} ${envConfig.token.symbol} (${till?.name ?? det.terminalId})`);
+  }, [v2.lastDetection, terminals, flashPayment]);
   const periodStartBlock = v1.reportState.periodStartBlock;
   const scannedBlock = v1.finalizedBlock;
   const confirmedBlock = v1.confirmedBlock;
@@ -182,7 +214,7 @@ export function usePaymentStream(): PaymentStream {
     for (const r of v2.records) {
       const inPeriod = r.firstSeenAtMs > periodStartMs; // at/before = closed by a previous Z
       (inPeriod ? open : closed).push({
-        id: `v2:${r.id}`,
+        id: `v2:${v2PaymentKey(r.topicHex, r.id, r.timestampMs)}`,
         terminalId: r.terminalId,
         amount: toToken(r.amountPlanck, decimals),
         tsMs: r.firstSeenAtMs,
@@ -191,8 +223,7 @@ export function usePaymentStream(): PaymentStream {
         checked: false,
         attention: r.claimStatus !== "claimed",
         status: v2Lifecycle(r.claimStatus),
-        reference: r.duplicateOfId ?? r.id,
-        duplicate: r.claimStatus === "duplicate",
+        reference: r.id,
         coinsCount: r.coinsCount,
         claimNote: r.claimDiagnostic,
       });
@@ -208,7 +239,6 @@ export function usePaymentStream(): PaymentStream {
     let grand = 0;
     let count = 0;
     for (const p of payments) {
-      if (p.duplicate) continue; // refused re-tap of a settled sale — no money received
       let cell = perTill.get(p.terminalId);
       if (!cell) {
         cell = { amount: 0, count: 0 };
@@ -400,6 +430,7 @@ export function usePaymentStream(): PaymentStream {
     toast,
     toggleCheck,
     checkAll,
+    dismissToast,
     closeOut,
     publishReport,
     updateXReport,

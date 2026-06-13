@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // @paritytech
 
-/**
- * `duplicate` is not a claim outcome — it marks a statement that re-used an
- * already-settled payment id and was refused before reaching the claim engine
- * (no coins claimed). Claim engines never produce it.
- */
-export type ClaimStatus = "claimed" | "claim_blocked" | "claim_failed" | "pending" | "duplicate";
+export type ClaimStatus = "claimed" | "claim_blocked" | "claim_failed" | "pending";
 
 export interface ClaimResult {
   status: ClaimStatus;
@@ -17,7 +12,8 @@ export interface ClaimResult {
 
 /**
  * A decoded + (attempted-)claimed Coinage statement payment. `id` is the
- * payload id — the dedupe key, idempotent across restarts.
+ * payload id chosen by the sender — only unique within one sender's numbering,
+ * so it is NOT the dedupe key on its own; see `v2PaymentKey`.
  */
 export interface PaymentRecord {
   id: string;
@@ -34,12 +30,18 @@ export interface PaymentRecord {
   /** Cumulative topUp attempts across all deliveries of this payment. */
   claimAttempts?: number;
   claimedAtMs?: number;
-  /**
-   * Set on `duplicate` records: the settled payment id this statement re-used.
-   * The record's own `id` is suffix-keyed so it never collides with the
-   * original; `amount`/`coinsCount` describe the refused statement, NOT money
-   * received — fiscal rollups must skip these.
-   */
-  duplicateOfId?: string;
   source: "v2";
+}
+
+/**
+ * Dedupe + storage identity of a v2 payment. The payload `id` is payer-chosen
+ * and only unique within one sender's numbering, so it is scoped by the
+ * terminal topic and the payload timestamp. Two genuinely-distinct sales that
+ * share an `id` — a second till re-using a ticket number, or one till
+ * re-presenting after an already-settled sale — differ in `(topicHex,
+ * timestampMs)` and stay separate; gossip re-deliveries of one statement
+ * (identical on all three) collapse onto the same key.
+ */
+export function v2PaymentKey(topicHex: string, id: string, timestampMs: number): string {
+  return `${topicHex}:${id}:${timestampMs}`;
 }

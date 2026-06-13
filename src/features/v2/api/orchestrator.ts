@@ -2,14 +2,15 @@
 // @paritytech
 
 /**
- * v2 ingest pipeline: topic-match → ECIES decrypt → dedupe by payload id →
+ * v2 ingest pipeline: topic-match → ECIES decrypt → dedupe by (topic, id,
  * immediate `pending` line item (+ detection event) → claim (per-terminal
  * binding gate) → resolve in place + persist. Decrypt/decode failures on open
  * topics are counted and ignored (spam-resistant). Idempotent across restarts:
  * a fully-claimed record never re-claims; a blocked/failed one retries on
- * re-delivery. A new statement that re-uses a settled payment id (a till
- * re-presenting an already-paid sale) is refused and recorded as a separate
- * `duplicate` line item — never claimed.
+ * re-delivery. The payload `id` is payer-chosen and only unique within one
+ * sender's numbering, so the dedupe identity is `v2PaymentKey` — `(topic, id,
+ * payload timestamp)`. Two distinct sales that share an `id` (a second till, or
+ * one till re-presenting after a settled sale) stay separate and both claim.
  *
  * Pure-ish core — all I/O (host statement source, claim engine, persistence) is
  * injected, so the whole pipeline is unit-tested with the real ECIES decrypt.
@@ -22,6 +23,7 @@ import type { ResolvedV2Terminal } from "@/config.ts"
 import type { BindingResult } from "@/features/v2/api/binding.ts";
 import type { ClaimEngine } from "@/features/v2/api/claim-engine.ts";
 import type { ClaimResult, PaymentRecord } from "@/features/v2/types.ts";
+import { v2PaymentKey } from "@/features/v2/types.ts";
 import { getChainTransport } from "@/shared/api/chain-transport.ts";
 import { captureWarning, withSpan } from "@/shared/utils/telemetry/helpers.ts";
 import { withPaymentTrace } from "@/shared/utils/telemetry/payment-trace.ts";
@@ -71,7 +73,7 @@ export interface OrchestratorDeps {
   persist: (record: PaymentRecord) => Promise<void>;
   /**
    * Called after every records-map mutation (pending insert, claim
-   * resolution, duplicate line) so the UI re-renders live instead of waiting
+   * resolution) so the UI re-renders live instead of waiting
    * for the end-of-page publish.
    */
   publish?: () => void;
@@ -151,59 +153,14 @@ export async function ingestStatement(
   }
 
   const tsMs = Number(timestamp);
-  const existing = deps.records.get(id);
-  if (existing && existing.claimStatus === "claimed") {
-    // The settled statement itself, re-delivered by statement-store gossip
-    // (identical payload timestamp) — idempotent, silent.
-    if (existing.timestampMs === tsMs) return existing;
-
-    // A NEW statement re-using a settled payment id: the till re-presented an
-    // already-paid sale and a customer tapped it again. Refuse the claim (the
-    // sale was already taken) but surface it as its own history line so the
-    // merchant sees the refused tap and rings up a fresh sale. Keyed by
-    // (id, payload timestamp): gossip re-deliveries of the duplicate statement
-    // collapse onto one record, idempotent across restarts. Deliberately ahead
-    // of the stale-backlog gate — no host call is at stake and an old
-    // double-tap is still worth surfacing once.
-    const dupId = `${id}::dup::${tsMs}`;
-    const knownDup = deps.records.get(dupId);
-    if (knownDup) return knownDup;
-
-    console.log(
-      `[v2:duplicate] id=${JSON.stringify(id)} re-presented with timestamp=${tsMs} ` +
-        `(settled statement was ${existing.timestampMs}); coins NOT claimed`,
-    );
-    return withPaymentTrace(id, () =>
-      withSpan("claim", "claim.pipeline", async (span) => {
-        span.setAttributes({
-          "payment.id": id,
-          "payment.topic": match.topicHex,
-          "pay.role": "processor",
-          "claim.sad": "false",
-          "pay.phase": "cheque-seen",
-        });
-        const dup: PaymentRecord = {
-          id: dupId,
-          terminalId: match.terminal.terminalId,
-          topicHex: match.topicHex,
-          amount,
-          amountPlanck: amountPlanck.toString(),
-          coinsCount: coins.length,
-          timestampMs: tsMs,
-          firstSeenAtMs: deps.now?.() ?? Date.now(),
-          claimStatus: "duplicate",
-          claimDiagnostic: `repeat of payment ${id} — that sale was already settled; coins not claimed`,
-          duplicateOfId: id,
-          source: "v2",
-        };
-        span.setAttributes({ "claim.outcome": "duplicate", "pay.phase": "duplicate" });
-        deps.records.set(dupId, dup);
-        deps.publish?.();
-        await deps.persist(dup);
-        return dup;
-      }) as Promise<PaymentRecord>,
-    );
-  }
+  const key = v2PaymentKey(match.topicHex, id, tsMs);
+  const existing = deps.records.get(key);
+  // The settled statement itself, re-delivered by statement-store gossip:
+  // identical (topic, id, payload timestamp) → identical key, so it returns the
+  // existing record silently. A distinct sale that re-uses `id` carries a
+  // different timestamp → a different key → it falls through and claims as its
+  // own line item.
+  if (existing?.claimStatus === "claimed") return existing;
 
   // Stale-backlog skip: a fresh subscription delivers everything in the local
   // node's gossip-retention window (minutes-to-hours of statements), and the
@@ -224,7 +181,7 @@ export async function ingestStatement(
   // statement every few seconds. Without this guard, every re-delivery (until
   // the first claim settles) would fire a fresh `paymentTopUp` — with a 30s
   // claim timeout that means ~10–30 concurrent host requests per cheque.
-  if (deps.inflight.has(id)) {
+  if (deps.inflight.has(key)) {
     console.log(
       `[v2:dedupe] in-flight claim for id=${JSON.stringify(id)}; ` +
         `skipping page re-delivery (statement-store gossip re-emit)`,
@@ -266,7 +223,7 @@ export async function ingestStatement(
         source: "v2",
       };
       const isNewPayment = !existing;
-      deps.records.set(id, pending);
+      deps.records.set(key, pending);
       deps.publish?.();
       if (isNewPayment) {
         console.log(`[v2:detect] new payment id=${JSON.stringify(id)} amount=${amount} → pending (claim starting)`);
@@ -274,14 +231,14 @@ export async function ingestStatement(
       }
       span.setAttribute("pay.phase", "decrypted");
 
-      deps.inflight.add(id);
+      deps.inflight.add(key);
       let result: ClaimResult;
       try {
         result = await withSpan("claim.submit", "claim.submit", () => deps.claimEngine.claim(coins, amountPlanck), {
           "claim.transport": getChainTransport(),
         });
       } finally {
-        deps.inflight.delete(id);
+        deps.inflight.delete(key);
       }
 
       const now = deps.now?.() ?? Date.now();
@@ -323,7 +280,7 @@ export async function ingestStatement(
         claimedAtMs: result.status === "claimed" ? now : existing?.claimedAtMs,
         source: "v2",
       };
-      deps.records.set(id, record);
+      deps.records.set(key, record);
       deps.publish?.();
       await deps.persist(record);
       return record;

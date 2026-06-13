@@ -138,10 +138,13 @@ export function TillDot({ id, size = 7 }: { id: string; size?: number }) {
   return <span style={{ width: size, height: size, borderRadius: "50%", background: tillColor(id), flex: "0 0 auto" }} />;
 }
 
-export function Toast({ msg, t = "neutral" }: { msg?: string; t?: Tone }) {
+export function Toast({ msg, t = "neutral", onDismiss }: { msg?: string; t?: Tone; onDismiss?: () => void }) {
   if (!msg) return null;
   return (
-    <div
+    <button
+      type="button"
+      onClick={onDismiss}
+      aria-label={`Dismiss notification: ${msg}`}
       style={{
         position: "absolute",
         bottom: 18,
@@ -156,16 +159,19 @@ export function Toast({ msg, t = "neutral" }: { msg?: string; t?: Tone }) {
         border: "1px solid var(--border)",
         borderRadius: "var(--radius-md)",
         boxShadow: "var(--shadow-lg)",
+        fontFamily: "var(--font-sans)",
         fontSize: 13,
         fontWeight: 500,
         color: "var(--text-1)",
         animation: "pay-row-in .25s ease",
         maxWidth: "88%",
+        cursor: onDismiss ? "pointer" : "default",
+        touchAction: "manipulation",
       }}
     >
       <span style={{ width: 7, height: 7, borderRadius: "50%", background: tone(t).solid, flex: "0 0 auto" }} />
       {msg}
-    </div>
+    </button>
   );
 }
 

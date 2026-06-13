@@ -31,6 +31,8 @@ export interface V2PaymentDetection {
   /** Token-unit amount string straight from the payload (e.g. "12.34"). */
   amount: string;
   atMs: number;
+  /** Stable payment key: topic + payment id + payload timestamp. */
+  key: string;
 }
 
 

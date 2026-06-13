@@ -29,7 +29,7 @@ import { resolveClaimEngine, type CoinsTopUpManager } from "@/features/v2/api/cl
 import { indexTerminalsByTopic, ingestPage, type OrchestratorDeps } from "@/features/v2/api/orchestrator.ts";
 import { loadRecords, upsertRecord } from "@/features/v2/api/records.ts";
 import { useV2Store, type HostAccountUiState, type HostSignInStatus } from "@/features/v2/store/useV2Store.ts";
-import type { PaymentRecord } from "@/features/v2/types.ts";
+import { v2PaymentKey, type PaymentRecord } from "@/features/v2/types.ts";
 
 export interface V2MonitorHandle {
   stop(): void;
@@ -147,6 +147,7 @@ export async function startV2Monitor(terminals: ResolvedV2Terminal[], signal?: A
             terminalId: record.terminalId,
             amount: record.amount,
             atMs: Date.now(),
+            key: v2PaymentKey(record.topicHex, record.id, record.timestampMs),
           },
         });
       },
@@ -231,10 +232,9 @@ export async function startV2Monitor(terminals: ResolvedV2Terminal[], signal?: A
           const claimed = ours.filter((r) => r.claimStatus === "claimed").length;
           const blocked = ours.filter((r) => r.claimStatus === "claim_blocked").length;
           const failed = ours.filter((r) => r.claimStatus === "claim_failed").length;
-          const duplicates = ours.filter((r) => r.claimStatus === "duplicate").length;
           dbg(
             `page: ${page.statements.length} statement(s) — ours=${ours.length} ` +
-              `(claimed=${claimed}, blocked=${blocked}, failed=${failed}, duplicates=${duplicates}); ` +
+              `(claimed=${claimed}, blocked=${blocked}, failed=${failed}); ` +
               `decode-failures+=${decodeDelta}`,
           );
           for (const r of ours) {
