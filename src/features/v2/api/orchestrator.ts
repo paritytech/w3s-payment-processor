@@ -22,6 +22,9 @@ import type { ResolvedV2Terminal } from "@/config.ts"
 import type { BindingResult } from "@/features/v2/api/binding.ts";
 import type { ClaimEngine } from "@/features/v2/api/claim-engine.ts";
 import type { ClaimResult, PaymentRecord } from "@/features/v2/types.ts";
+import { getChainTransport } from "@/shared/api/chain-transport.ts";
+import { captureWarning, withSpan } from "@/shared/utils/telemetry/helpers.ts";
+import { withPaymentTrace } from "@/shared/utils/telemetry/payment-trace.ts";
 
 /** Minimal statement shape consumed from the host statement-store page. */
 export interface StatementLike {
@@ -130,10 +133,9 @@ export async function ingestStatement(
       ? `decryptionKey=${dk.length}B/${bytesToHex(dk.subarray(0, Math.min(16, dk.length)))}`
       : "decryptionKey=<none>";
     const cause = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-    deps.onDecodeFailure?.(
-      match.topicHex,
-      `decrypt failed (${cause}; ${statement.data.length}B envelope; tail=${tail}; ${dkInfo}; full=${fullHex})`,
-    );
+    const reason = `decrypt failed (${cause}; ${statement.data.length}B envelope; tail=${tail}; ${dkInfo}; full=${fullHex})`;
+    deps.onDecodeFailure?.(match.topicHex, reason);
+    captureWarning("claim decrypt skipped", { topicHex: match.topicHex, reason });
     return null;
   }
 
@@ -171,24 +173,36 @@ export async function ingestStatement(
       `[v2:duplicate] id=${JSON.stringify(id)} re-presented with timestamp=${tsMs} ` +
         `(settled statement was ${existing.timestampMs}); coins NOT claimed`,
     );
-    const dup: PaymentRecord = {
-      id: dupId,
-      terminalId: match.terminal.terminalId,
-      topicHex: match.topicHex,
-      amount,
-      amountPlanck: amountPlanck.toString(),
-      coinsCount: coins.length,
-      timestampMs: tsMs,
-      firstSeenAtMs: deps.now?.() ?? Date.now(),
-      claimStatus: "duplicate",
-      claimDiagnostic: `repeat of payment ${id} — that sale was already settled; coins not claimed`,
-      duplicateOfId: id,
-      source: "v2",
-    };
-    deps.records.set(dupId, dup);
-    deps.publish?.();
-    await deps.persist(dup);
-    return dup;
+    return withPaymentTrace(id, () =>
+      withSpan("claim", "claim.pipeline", async (span) => {
+        span.setAttributes({
+          "payment.id": id,
+          "payment.topic": match.topicHex,
+          "pay.role": "processor",
+          "claim.sad": "false",
+          "pay.phase": "cheque-seen",
+        });
+        const dup: PaymentRecord = {
+          id: dupId,
+          terminalId: match.terminal.terminalId,
+          topicHex: match.topicHex,
+          amount,
+          amountPlanck: amountPlanck.toString(),
+          coinsCount: coins.length,
+          timestampMs: tsMs,
+          firstSeenAtMs: deps.now?.() ?? Date.now(),
+          claimStatus: "duplicate",
+          claimDiagnostic: `repeat of payment ${id} — that sale was already settled; coins not claimed`,
+          duplicateOfId: id,
+          source: "v2",
+        };
+        span.setAttributes({ "claim.outcome": "duplicate", "pay.phase": "duplicate" });
+        deps.records.set(dupId, dup);
+        deps.publish?.();
+        await deps.persist(dup);
+        return dup;
+      }) as Promise<PaymentRecord>,
+    );
   }
 
   // Stale-backlog skip: a fresh subscription delivers everything in the local
@@ -218,70 +232,103 @@ export async function ingestStatement(
     return null;
   }
 
-  // The merchant sees the tap the moment it decodes: a `pending` line item
-  // lands before the claim round-trip (up to 30s × attempts), then resolves
-  // in place to claimed/failed/blocked below. In-memory only — a crash
-  // mid-claim must rehydrate to the pre-claim state so the re-delivery +
-  // backlog semantics decide whether to retry, rather than tombstoning a
-  // forever-"pending" row in durable history.
-  const firstSeenAtMs = existing?.firstSeenAtMs ?? (deps.now?.() ?? Date.now());
-  const pending: PaymentRecord = {
-    id,
-    terminalId: match.terminal.terminalId,
-    topicHex: match.topicHex,
-    amount,
-    amountPlanck: amountPlanck.toString(),
-    coinsCount: coins.length,
-    timestampMs: tsMs,
-    firstSeenAtMs,
-    claimStatus: "pending",
-    claimDiagnostic: existing?.claimDiagnostic,
-    claimAttempts: existing?.claimAttempts,
-    source: "v2",
-  };
-  const isNewPayment = !existing;
-  deps.records.set(id, pending);
-  deps.publish?.();
-  if (isNewPayment) {
-    console.log(`[v2:detect] new payment id=${JSON.stringify(id)} amount=${amount} → pending (claim starting)`);
-    deps.onPaymentDetected?.(pending);
-  }
+  // Wrap the real-work path (pending → claim → resolve) in the payment trace +
+  // claim.pipeline span so every leg is correlated in Sentry by payment id.
+  return withPaymentTrace(id, () =>
+    withSpan("claim", "claim.pipeline", async (span) => {
+      span.setAttributes({
+        "payment.id": id,
+        "payment.topic": match.topicHex,
+        "pay.role": "processor",
+        "claim.sad": "false",
+        "pay.phase": "cheque-seen",
+      });
 
-  deps.inflight.add(id);
-  let result: ClaimResult;
-  try {
-    result = await deps.claimEngine.claim(coins, amountPlanck);
-  } finally {
-    deps.inflight.delete(id);
-  }
+      // The merchant sees the tap the moment it decodes: a `pending` line item
+      // lands before the claim round-trip (up to 30s × attempts), then resolves
+      // in place to claimed/failed/blocked below. In-memory only — a crash
+      // mid-claim must rehydrate to the pre-claim state so the re-delivery +
+      // backlog semantics decide whether to retry, rather than tombstoning a
+      // forever-"pending" row in durable history.
+      const firstSeenAtMs = existing?.firstSeenAtMs ?? (deps.now?.() ?? Date.now());
+      const pending: PaymentRecord = {
+        id,
+        terminalId: match.terminal.terminalId,
+        topicHex: match.topicHex,
+        amount,
+        amountPlanck: amountPlanck.toString(),
+        coinsCount: coins.length,
+        timestampMs: tsMs,
+        firstSeenAtMs,
+        claimStatus: "pending",
+        claimDiagnostic: existing?.claimDiagnostic,
+        claimAttempts: existing?.claimAttempts,
+        source: "v2",
+      };
+      const isNewPayment = !existing;
+      deps.records.set(id, pending);
+      deps.publish?.();
+      if (isNewPayment) {
+        console.log(`[v2:detect] new payment id=${JSON.stringify(id)} amount=${amount} → pending (claim starting)`);
+        deps.onPaymentDetected?.(pending);
+      }
+      span.setAttribute("pay.phase", "decrypted");
 
-  const now = deps.now?.() ?? Date.now();
-  // Cumulative across deliveries: gossip re-delivers a failed cheque, and each
-  // cycle adds its attempts — the record always says how often we tried.
-  const claimAttempts = (existing?.claimAttempts ?? 0) + (result.attempts ?? 0);
-  const record: PaymentRecord = {
-    id,
-    terminalId: match.terminal.terminalId,
-    topicHex: match.topicHex,
-    amount,
-    amountPlanck: amountPlanck.toString(),
-    coinsCount: coins.length,
-    timestampMs: tsMs,
-    firstSeenAtMs,
-    claimStatus: result.status,
-    claimDiagnostic:
-      result.status === "claim_failed"
-        ? `failed after ${claimAttempts} attempt${claimAttempts === 1 ? "" : "s"} — ` +
-          (result.diagnostic ?? "host rejected the top-up")
-        : result.diagnostic,
-    claimAttempts,
-    claimedAtMs: result.status === "claimed" ? now : existing?.claimedAtMs,
-    source: "v2",
-  };
-  deps.records.set(id, record);
-  deps.publish?.();
-  await deps.persist(record);
-  return record;
+      deps.inflight.add(id);
+      let result: ClaimResult;
+      try {
+        result = await withSpan("claim.submit", "claim.submit", () => deps.claimEngine.claim(coins, amountPlanck), {
+          "claim.transport": getChainTransport(),
+        });
+      } finally {
+        deps.inflight.delete(id);
+      }
+
+      const now = deps.now?.() ?? Date.now();
+      // Cumulative across deliveries: gossip re-delivers a failed cheque, and each
+      // cycle adds its attempts — the record always says how often we tried.
+      const claimAttempts = (existing?.claimAttempts ?? 0) + (result.attempts ?? 0);
+
+      // Map result status → span outcome attributes.
+      const outcome: string =
+        result.status === "claimed" ? "claimed"
+        : result.status === "claim_blocked" ? "blocked"
+        : "failed";
+      span.setAttributes({ "claim.outcome": outcome });
+      if (outcome !== "claimed") {
+        span.setAttributes({ "claim.sad": "true" });
+      }
+      const finalPhase =
+        result.status === "claimed" ? "claimed"
+        : result.status === "claim_blocked" ? "blocked"
+        : "failed";
+      span.setAttribute("pay.phase", finalPhase);
+
+      const record: PaymentRecord = {
+        id,
+        terminalId: match.terminal.terminalId,
+        topicHex: match.topicHex,
+        amount,
+        amountPlanck: amountPlanck.toString(),
+        coinsCount: coins.length,
+        timestampMs: tsMs,
+        firstSeenAtMs,
+        claimStatus: result.status,
+        claimDiagnostic:
+          result.status === "claim_failed"
+            ? `failed after ${claimAttempts} attempt${claimAttempts === 1 ? "" : "s"} — ` +
+              (result.diagnostic ?? "host rejected the top-up")
+            : result.diagnostic,
+        claimAttempts,
+        claimedAtMs: result.status === "claimed" ? now : existing?.claimedAtMs,
+        source: "v2",
+      };
+      deps.records.set(id, record);
+      deps.publish?.();
+      await deps.persist(record);
+      return record;
+    }) as Promise<PaymentRecord>,
+  );
 }
 
 /** Ingest a page of statements in order, returning the records that were ours. */
