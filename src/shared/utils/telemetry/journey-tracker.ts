@@ -51,6 +51,8 @@ interface ActiveJourney {
   phaseSpan: Span | null;
   readonly startMs: number;
   readonly logTag: string;
+  /** Set true by markSad when the flow completed but with friction. */
+  sad: boolean;
 }
 
 type AttrInput = Readonly<Record<string, JourneyAttrValue>> | undefined;
@@ -84,6 +86,7 @@ export class JourneyTracker<T extends string> {
       phaseSpan: null,
       startMs,
       logTag: `[Journey:${name}]`,
+      sad: false,
     });
     console.info(`[Journey:${name}] started`);
     Sentry.addBreadcrumb({
@@ -93,6 +96,12 @@ export class JourneyTracker<T extends string> {
       message: `${name}/start`,
       data: merged,
     });
+  }
+
+  /** Mark an in-flight journey as "sad" (completed but with friction). No-op when inactive. */
+  markSad(name: T): void {
+    const j = this.active.get(name);
+    if (j) j.sad = true;
   }
 
   /**
@@ -135,6 +144,7 @@ export class JourneyTracker<T extends string> {
     if (Object.keys(merged).length > 0) {
       journey.rootSpan.setAttributes(merged);
     }
+    journey.rootSpan.setAttribute("journey.sad", journey.sad ? "true" : "false");
     journey.rootSpan.setStatus({ code: 1 /* OK */ });
     journey.rootSpan.end();
     this.active.delete(name);
@@ -170,6 +180,7 @@ export class JourneyTracker<T extends string> {
     const safeReason = truncate(reason, 32);
     merged["journey.failure_reason"] = safeReason;
     journey.rootSpan.setAttributes(merged);
+    journey.rootSpan.setAttribute("journey.sad", "true");
     journey.rootSpan.setStatus({ code: 2 /* ERROR */, message: safeReason });
     journey.rootSpan.end();
     this.active.delete(name);

@@ -83,6 +83,7 @@ describe("instrumentClaimEngine", () => {
     expect(spans[0]!.attributes["claim.status"]).toBe("claimed");
     expect(spans[0]!.attributes["claim.attempts"]).toBe(2);
     expect(spans[0]!.attributes["coins.count"]).toBe(2);
+    expect(spans[0]!.attributes["op.sad"]).toBe("false");
     expect(mocks.setMeasurement).toHaveBeenCalledWith("claim.duration", expect.any(Number), "millisecond", mocks.fakeSpan);
   });
 
@@ -130,6 +131,15 @@ describe("instrumentClaimEngine", () => {
     await wrapped.claim([new Uint8Array(64)], 1n);
     expect(spanOpts("payment.claim")).toHaveLength(0);
   });
+
+  it("flags op.sad=true for a claim that does not settle", async () => {
+    const wrapped = instrumentClaimEngine({
+      enabled: true,
+      claim: async () => ({ status: "claim_failed", attempts: 3, diagnostic: "host busy" }),
+    });
+    await wrapped.claim([new Uint8Array(64)], 1n);
+    expect(spanOpts("payment.claim")[0]!.attributes["op.sad"]).toBe("true");
+  });
 });
 
 describe("instrumentTopUpManager", () => {
@@ -145,6 +155,7 @@ describe("instrumentTopUpManager", () => {
     expect(spans).toHaveLength(1);
     expect(spans[0]!.attributes["topup.ok"]).toBe(true);
     expect(spans[0]!.attributes["coins.count"]).toBe(3);
+    expect(spans[0]!.attributes["op.sad"]).toBe("false");
     expect(mocks.setMeasurement).toHaveBeenCalledWith("topup.duration", expect.any(Number), "millisecond", mocks.fakeSpan);
   });
 
@@ -170,6 +181,7 @@ describe("instrumentTopUpManager", () => {
     const spans = spanOpts("payment.topup");
     expect(spans).toHaveLength(1);
     expect(spans[0]!.attributes["topup.ok"]).toBe(false);
+    expect(spans[0]!.attributes["op.sad"]).toBe("true");
   });
 });
 
@@ -198,6 +210,7 @@ describe("recordPaymentRecord", () => {
     expect(spans[0]!.startTime).toBe(9_000);
     expect(spans[0]!.attributes["terminal.id"]).toBe("955002-00");
     expect(spans[0]!.attributes["cheque.id"]).toBe("a".repeat(32));
+    expect(spans[0]!.attributes["payment.sad"]).toBe("false");
     expect(mocks.setMeasurement).toHaveBeenCalledWith("payment.success", 1, "none", mocks.fakeSpan);
     expect(mocks.setMeasurement).toHaveBeenCalledWith("payment.e2e", 6000, "millisecond", mocks.fakeSpan);
     expect(mocks.captureException).not.toHaveBeenCalled();
@@ -217,6 +230,7 @@ describe("recordPaymentRecord", () => {
 
     recordPaymentRecord(failed);
     recordPaymentRecord(failed);
+    expect(spanOpts("payment.outcome")[0]!.attributes["payment.sad"]).toBe("true");
 
     expect(mocks.captureException).toHaveBeenCalledTimes(1);
     const [, context] = mocks.captureException.mock.calls[0] as [unknown, { extra: { diagnostic: string } }];
@@ -273,6 +287,7 @@ describe("recordDecodeFailure", () => {
       "amount_parse",
       "unknown",
     ]);
+    expect(spanOpts("payment.decode_failure").every((o) => o.attributes["op.sad"] === "true")).toBe(true);
   });
 
   it("dedupes captureException per stage+topic but emits a span each time", () => {

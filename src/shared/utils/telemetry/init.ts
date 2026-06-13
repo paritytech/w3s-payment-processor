@@ -21,7 +21,7 @@
 
 import * as Sentry from "@sentry/react";
 
-import { beforeBreadcrumb, beforeSend } from "./scrub.ts";
+import { beforeBreadcrumb, beforeSend, scrubTransaction } from "./scrub.ts";
 
 export interface InitTelemetryOptions {
   /** Sentry DSN. Empty string = console-only mode (no network calls). */
@@ -60,6 +60,7 @@ export function initTelemetry(options: InitTelemetryOptions): void {
     tracePropagationTargets: [],
     beforeSend,
     beforeBreadcrumb,
+    beforeSendTransaction: scrubTransaction,
     initialScope: {
       tags: {
         "app.name": options.app,

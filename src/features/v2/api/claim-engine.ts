@@ -2,6 +2,7 @@
 // @paritytech
 
 import type { ClaimResult } from "@/features/v2/types.ts";
+import { captureWarning } from "@/shared/utils/telemetry/index.ts";
 
 /**
  * Claims bearer coins into the host's own wallet. The SPA never signs — the
@@ -107,7 +108,10 @@ export function createCoinsClaimEngine(
       } catch (error) {
         lastDiagnostic = error instanceof Error ? error.message : String(error);
         console.warn(`[v2:claim] topUp attempt ${attempt}/${maxAttempts} rejected/timed out: ${lastDiagnostic}`);
-        if (attempt < maxAttempts) await sleep(retryDelayMs);
+        if (attempt < maxAttempts) {
+          captureWarning("v2 claim topUp retry", { attempt, "max.attempts": maxAttempts });
+          await sleep(retryDelayMs);
+        }
       }
     }
     return { status: "claim_failed", attempts: maxAttempts, diagnostic: lastDiagnostic };

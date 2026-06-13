@@ -20,6 +20,7 @@ import * as Sentry from "@sentry/react";
 import { initTelemetry } from "@/shared/utils/telemetry/init.ts";
 import { recordPaymentRecord } from "@/features/v2/api/telemetry.ts";
 import type { PaymentRecord } from "@/features/v2/types.ts";
+import { _clearSecretsForTest, registerSecret } from "@/shared/utils/telemetry/index.ts";
 
 const claimedRecord: PaymentRecord = {
   id: "pay-1",
@@ -50,6 +51,7 @@ function captureFetch(): string[] {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  _clearSecretsForTest();
 });
 
 describe("initTelemetry", () => {
@@ -88,5 +90,24 @@ describe("initTelemetry", () => {
     await Sentry.flush(2_000);
 
     expect(sent).toHaveLength(0);
+  });
+
+  it("redacts a registered secret from the outbound envelope", async () => {
+    captureFetch();
+    initTelemetry({ dsn: "https://pub@example.ingest.sentry.io/1", app: "test", environment: "test" });
+    registerSecret("S3CR3T-passkey-bbbbbbbb");
+
+    const envelopes: string[] = [];
+    Sentry.getClient()?.on("beforeEnvelope", (envelope) => {
+      envelopes.push(JSON.stringify(envelope));
+    });
+
+    Sentry.captureException(new Error("unlock failed for S3CR3T-passkey-bbbbbbbb"));
+    await Sentry.flush(2_000);
+
+    const joined = envelopes.join("\n");
+    expect(envelopes.length).toBeGreaterThan(0);
+    expect(joined).not.toContain("S3CR3T");
+    expect(joined).toContain("«secret»");
   });
 });

@@ -26,6 +26,10 @@ import type {
   ErrorEvent,
   EventHint,
 } from "@sentry/react";
+// Derived from react's own option type — a bare `@sentry/core` import here resolves to the wrong major (9.x via @sentry/node).
+type SentryInitOptions = NonNullable<Parameters<typeof import("@sentry/react").init>[0]>;
+type BeforeSendTransaction = NonNullable<SentryInitOptions["beforeSendTransaction"]>;
+type TransactionEvent = Parameters<BeforeSendTransaction>[0];
 
 /**
  * Keys whose presence on a Sentry attribute / tag / breadcrumb data
@@ -75,9 +79,30 @@ const EXCEPTION_REDACTORS: ReadonlyArray<readonly [RegExp, string]> = [
   [/(https?|wss?):\/\/[^\s"']+/g, "$1://«url»"],
 ];
 
+/** Value-based redaction registry: the complement to SENSITIVE_KEY_RE, which only matches by key name. */
+const REGISTERED_SECRET = "«secret»";
+const secrets = new Set<string>();
+
+/**
+ * Register a long-lived secret (≥8 chars) for value-based redaction everywhere
+ * it appears in telemetry. Values <8 chars are ignored so a short secret can't
+ * corrupt unrelated text. Idempotent; never throws.
+ */
+export function registerSecret(value: string | undefined | null): void {
+  if (typeof value === "string" && value.length >= 8) secrets.add(value);
+}
+
+/** Test-only: reset the registry between cases. */
+export function _clearSecretsForTest(): void {
+  secrets.clear();
+}
+
 /** Run the redactors + length cap over an exception message. Pure. */
 export function sanitizeExceptionMessage(message: string): string {
   let out = message;
+  for (const secret of secrets) {
+    if (out.includes(secret)) out = out.split(secret).join(REGISTERED_SECRET);
+  }
   for (const [pattern, replacement] of EXCEPTION_REDACTORS) {
     out = out.replace(pattern, replacement);
   }
@@ -129,9 +154,36 @@ export function scrubAttributes(
   return out;
 }
 
-// `Sentry.init({ beforeSend })` only fires for error events; transactions
-// use the separate `beforeSendTransaction` hook (we don't install one
-// because our spans are pre-scrubbed at the `JourneyTracker` layer).
+// beforeSend covers only error events; transactions need this separate hook (wired in init.ts).
+
+/**
+ * `Sentry.init({ beforeSendTransaction })` hook. The v2 payment spans build
+ * attributes directly (bypassing the JourneyTracker scrub layer), so scrub
+ * span + trace data here too: drop SENSITIVE_KEY_RE keys, redact PII patterns
+ * + registered secrets from string values. Never throws.
+ */
+export function scrubTransaction(event: TransactionEvent): TransactionEvent {
+  try {
+    const maps: Array<Record<string, unknown> | undefined> = [
+      ...(event.spans ?? []).map((s) => s.data as Record<string, unknown> | undefined),
+      event.contexts?.trace?.data as Record<string, unknown> | undefined,
+    ];
+    for (const data of maps) {
+      if (!data) continue;
+      for (const key of Object.keys(data)) {
+        if (SENSITIVE_KEY_RE.test(key)) {
+          delete data[key];
+          continue;
+        }
+        const v = data[key];
+        if (typeof v === "string") data[key] = sanitizeExceptionMessage(v);
+      }
+    }
+  } catch {
+    /* telemetry must never throw */
+  }
+  return event;
+}
 
 /**
  * `Sentry.init({ beforeSend })` hook. Strips identifying request metadata

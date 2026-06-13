@@ -16,7 +16,7 @@
 
 import * as Sentry from "@sentry/react";
 
-import { breadcrumb, captureError, sanitizeExceptionMessage } from "@/shared/utils/telemetry/index.ts";
+import { breadcrumb, captureError, sanitizeExceptionMessage, SpanOp } from "@/shared/utils/telemetry/index.ts";
 import type { ClaimEngine, CoinsTopUpManager } from "@/features/v2/api/claim-engine.ts";
 import type { ClaimResult, PaymentRecord } from "@/features/v2/types.ts";
 
@@ -112,6 +112,7 @@ export function recordPaymentRecord(record: PaymentRecord): void {
     "terminal.id": record.terminalId,
     "cheque.id": record.id,
     "coins.count": record.coinsCount,
+    "payment.sad": claimed ? "false" : "true",
   };
   if (record.claimAttempts !== undefined) attributes["claim.attempts"] = record.claimAttempts;
 
@@ -126,7 +127,7 @@ export function recordPaymentRecord(record: PaymentRecord): void {
   // detection→settle interval — without an explicit startTime this span opens
   // and closes in the same tick and reports 0ms in the trace waterfall.
   Sentry.startSpan(
-    { name: `payment:${record.claimStatus}`, op: "payment.outcome", attributes, startTime: record.firstSeenAtMs },
+    { name: `payment:${record.claimStatus}`, op: SpanOp.PAYMENT_OUTCOME, attributes, startTime: record.firstSeenAtMs },
     (span) => {
       Sentry.setMeasurement("payment.success", claimed ? 1 : 0, "none", span);
       if (e2eMs !== undefined) Sentry.setMeasurement("payment.e2e", e2eMs, "millisecond", span);
@@ -180,8 +181,9 @@ export function recordDecodeFailure(topicHex: string, reason: string, terminalId
     "decode.stage": stage,
     "terminal.id": terminalId,
     "topic.prefix": topicHex.slice(0, 8),
+    "op.sad": "true",
   };
-  Sentry.startSpan({ name: `decode:${stage}`, op: "payment.decode_failure", attributes }, (span) => {
+  Sentry.startSpan({ name: `decode:${stage}`, op: SpanOp.PAYMENT_DECODE_FAILURE, attributes }, (span) => {
     span.setStatus({ code: 2, message: stage });
   });
   breadcrumb("decode failure", attributes, "app", "error");
@@ -214,13 +216,14 @@ function emitClaimSpan(result: ClaimResult, coinsCount: number, queueDepth: numb
     "claim.status": result.status,
     "coins.count": coinsCount,
     "claim.queue_depth": queueDepth,
+    "op.sad": result.status === "claimed" ? "false" : "true",
   };
   if (result.attempts !== undefined) attributes["claim.attempts"] = result.attempts;
   // Backdated by the measured duration: the span is emitted after the claim
   // settles, and an explicit epoch-ms startTime is what gives it a real
   // duration instead of 0ms (the SDK ends it at "now" when the callback returns).
   Sentry.startSpan(
-    { name: `claim:${result.status}`, op: "payment.claim", attributes, startTime: Date.now() - durationMs },
+    { name: `claim:${result.status}`, op: SpanOp.PAYMENT_CLAIM, attributes, startTime: Date.now() - durationMs },
     (span) => {
       Sentry.setMeasurement("claim.duration", Math.round(durationMs), "millisecond", span);
       span.setStatus(result.status === "claimed" ? { code: 1, message: "ok" } : { code: 2, message: result.status });
@@ -232,10 +235,11 @@ function emitTopupSpan(args: { ok: boolean; coinsCount: number; durationMs: numb
   const attributes: SpanAttributes = {
     "topup.ok": args.ok,
     "coins.count": args.coinsCount,
+    "op.sad": args.ok ? "false" : "true",
   };
   // Backdated like the claim span — see emitClaimSpan.
   Sentry.startSpan(
-    { name: `topup:${args.ok ? "ok" : "fail"}`, op: "payment.topup", attributes, startTime: Date.now() - args.durationMs },
+    { name: `topup:${args.ok ? "ok" : "fail"}`, op: SpanOp.PAYMENT_TOPUP, attributes, startTime: Date.now() - args.durationMs },
     (span) => {
       Sentry.setMeasurement("topup.duration", Math.round(args.durationMs), "millisecond", span);
       span.setStatus(args.ok ? { code: 1, message: "ok" } : { code: 2, message: (args.reason ?? "topup_failed").slice(0, 32) });

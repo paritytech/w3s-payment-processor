@@ -37,7 +37,7 @@ import {
   recordHostUnreachable,
   recordPaymentRecord,
 } from "@/features/v2/api/telemetry.ts";
-import { breadcrumb, captureError } from "@/shared/utils/telemetry/index.ts";
+import { breadcrumb, captureError, captureWarning, isExpectedError } from "@/shared/utils/telemetry/index.ts";
 
 export interface V2MonitorHandle {
   stop(): void;
@@ -240,7 +240,9 @@ export async function startV2Monitor(terminals: ResolvedV2Terminal[], signal?: A
           } catch (error) {
             useV2Store.setState({ error: errMessage(error) });
             dbg(`page error: ${errMessage(error)}`);
-            captureError(error, { component: "v2-engine", phase: "ingest-page" });
+            const m = errMessage(error);
+            if (isExpectedError(m)) captureWarning("v2 ingest page failed (expected)", { component: "v2-engine", phase: "ingest-page" });
+            else captureError(error, { component: "v2-engine", phase: "ingest-page" });
           } finally {
             publishRecords();
           }

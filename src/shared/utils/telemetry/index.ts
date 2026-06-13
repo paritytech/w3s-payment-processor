@@ -30,7 +30,10 @@ export {
   withSpan,
   breadcrumb,
   captureError,
-  type SpanOp,
+  captureWarning,
+  isExpectedError,
+  SpanOp,
+  type SpanOpValue,
 } from "./sentry-helpers.ts";
 export {
   initTelemetry,
@@ -46,4 +49,7 @@ export {
   scrubAttributes,
   beforeSend,
   beforeBreadcrumb,
+  registerSecret,
+  _clearSecretsForTest,
+  scrubTransaction,
 } from "./scrub.ts";

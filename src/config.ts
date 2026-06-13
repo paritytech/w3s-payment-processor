@@ -91,6 +91,7 @@ function readEnv() {
       dsn: (import.meta.env.VITE_SENTRY_DSN ?? "").trim(),
       environment: import.meta.env.VITE_SENTRY_ENV ?? import.meta.env.MODE,
       tracesSampleRate: readSampleRate("VITE_SENTRY_TRACES_SAMPLE_RATE", 1),
+      release: import.meta.env.VITE_SENTRY_RELEASE || import.meta.env.VITE_COMMIT_SHA || undefined,
     },
   };
 }

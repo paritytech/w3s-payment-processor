@@ -23,6 +23,7 @@ import { readContract } from "@/shared/api/contracts/read.ts";
 import { W3SPayRegistryABI } from "@/features/v1/api/registry-abi.ts";
 import { mainChainClient } from "@/shared/api/client.ts";
 import { isInHost } from "@/shared/api/host/connection.ts";
+import { registerSecret } from "@/shared/utils/telemetry/index.ts";
 
 /** Decoded `getProcessorConfig` tuple — mirrors the Solidity `ProcessorConfigRecord`. */
 interface RawProcessorConfigRecord {
@@ -185,6 +186,8 @@ export async function resolveRemoteProcessorConfig(
   const wantedGroupId = groupId.trim();
   if (wantedGroupId === "") throw new RemoteCredentialsError("enter your POS group id");
   if (passkey === "") throw new RemoteCredentialsError("enter your unlock passkey");
+  // The passkey also re-encrypts Z-reports (app/unlock-creds.ts); redact it from all telemetry.
+  registerSecret(passkey);
 
   console.log(`[unlock] resolveRemoteProcessorConfig  group="${wantedGroupId}"  envelope=${options.envelope ? "supplied" : "fetch"}`);
   const t = performance.now();
