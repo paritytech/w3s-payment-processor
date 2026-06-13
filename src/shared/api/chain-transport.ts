@@ -17,6 +17,8 @@
  * it lives outside React context.
  */
 
+import { captureWarning } from "@/shared/utils/telemetry/helpers.ts";
+
 export type ChainTransport = "host" | "rpc";
 
 export const DEFAULT_CHAIN_TRANSPORT: ChainTransport = "host";
@@ -44,11 +46,17 @@ export function getChainTransport(): ChainTransport {
  * `dropStaleTransportClients` in `shared/api/client.ts`).
  */
 export function setChainTransport(transport: ChainTransport): void {
+  const from = getChainTransport();
   current = transport;
   try {
     localStorage.setItem(STORAGE_KEY, transport);
   } catch {
     /* ignore storage failures (private mode / sandbox) */
+  }
+  // A host→rpc (or rpc→host) switch is a manual failover — the active chain
+  // link is degraded. Surface it as a reliability signal.
+  if (from !== transport) {
+    captureWarning("chain transport failover", { from, to: transport });
   }
 }
 
