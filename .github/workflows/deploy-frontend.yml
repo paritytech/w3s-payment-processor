@@ -73,6 +73,8 @@ jobs:
           VITE_NETWORK: ${{ vars.VITE_NETWORK || 'paseo-next-v2' }}
           VITE_W3SPAY_REGISTRY_ADDRESS: ${{ vars.VITE_W3SPAY_REGISTRY_ADDRESS || '0x70f6a449d770931419cfa8d8412e3a5d6377e905' }}
           NODE_OPTIONS: '--max-old-space-size=8192'
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          VITE_SENTRY_ENV: ${{ github.event_name == 'pull_request' && 'preview' || 'production' }}
 
       - name: Comment on PR
         if: github.event.pull_request
