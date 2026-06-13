@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // @paritytech
-import type { ErrorEvent, TransactionEvent } from "@sentry/core";
+import * as Sentry from "@sentry/react";
+
+// Derive the exact event types Sentry.init's hooks expect. @sentry/react bundles a
+// nested @sentry/core, so importing ErrorEvent/TransactionEvent from a top-level
+// @sentry/core is a different (mismatched) type; deriving from init() is identity-correct.
+type SentryInitOptions = NonNullable<Parameters<typeof Sentry.init>[0]>;
+type ScrubErrorEvent = Parameters<NonNullable<SentryInitOptions["beforeSend"]>>[0];
+type ScrubTransactionEvent = Parameters<NonNullable<SentryInitOptions["beforeSendTransaction"]>>[0];
 const REDACTED = "[redacted]";
 const SENSITIVE_KEY_RE = /key|secret|cred|envelope|cheque|mnemonic|privatekey|seed|passphrase/i;
 const ADDRESS_KEY_RE = /address/i;
@@ -15,7 +22,7 @@ function scrubDataMap(d: Record<string, unknown>): void {
     else if (typeof v === "string") d[k] = ADDRESS_KEY_RE.test(k) ? (truncateAddress(v) ?? v) : scrubText(v);
   }
 }
-export function scrubEvent(event: ErrorEvent): ErrorEvent {
+export function scrubEvent(event: ScrubErrorEvent): ScrubErrorEvent {
   try {
     if (typeof event.message === "string") event.message = scrubText(event.message);
     for (const ex of event.exception?.values ?? []) if (typeof ex.value === "string") ex.value = scrubText(ex.value);
@@ -25,7 +32,7 @@ export function scrubEvent(event: ErrorEvent): ErrorEvent {
   } catch { /* telemetry must never throw */ }
   return event;
 }
-export function scrubTransaction(event: TransactionEvent): TransactionEvent {
+export function scrubTransaction(event: ScrubTransactionEvent): ScrubTransactionEvent {
   try {
     for (const sp of event.spans ?? []) if (sp.data) scrubDataMap(sp.data as Record<string, unknown>);
     const td = (event.contexts?.trace?.data ?? null) as Record<string, unknown> | null; if (td) scrubDataMap(td);

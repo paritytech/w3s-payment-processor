@@ -20,7 +20,7 @@ describe("initTelemetry", () => {
   it("passes beforeSend=scrubEvent and beforeSendTransaction=scrubTransaction to Sentry.init", () => {
     initTelemetry({ dsn: "https://test@sentry.io/123", environment: "test" });
     expect(mockSentryInit).toHaveBeenCalledOnce();
-    const opts = mockSentryInit.mock.calls[0][0];
+    const opts = mockSentryInit.mock.calls[0]![0];
     expect(opts.beforeSend).toBe(scrubEvent);
     expect(opts.beforeSendTransaction).toBe(scrubTransaction);
   });

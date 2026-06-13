@@ -19,7 +19,7 @@ describe("withPaymentTrace", () => {
     const result = withPaymentTrace(id, () => "done");
     expect(result).toBe("done");
     expect(mockContinueTrace).toHaveBeenCalledOnce();
-    const { sentryTrace } = mockContinueTrace.mock.calls[0][0] as { sentryTrace: string };
+    const { sentryTrace } = mockContinueTrace.mock.calls[0]![0] as { sentryTrace: string };
     expect(sentryTrace.startsWith(id)).toBe(true);
   });
 
