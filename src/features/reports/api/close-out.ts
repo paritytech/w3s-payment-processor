@@ -18,6 +18,8 @@ import { useV1Store } from "@/features/v1/store/useV1Store.ts";
 import type { PaymentRecord } from "@/features/v2/types.ts";
 import { useV2Store } from "@/features/v2/store/useV2Store.ts";
 import { resolveKvStore } from "@/shared/utils/kv-store.ts";
+import * as Sentry from "@sentry/react";
+import { withSpan, isExpectedError } from "@/shared/utils/telemetry/helpers.ts";
 
 export interface CombinedPeriodInputs {
   v1Events: readonly PaymentEvent[];
@@ -132,25 +134,37 @@ export function commitCombinedZReport(inputs: CombinedPeriodInputs, lastZSeq: nu
  * gates readiness (`closeOutBlocker`) and owns the on-chain publish attempt.
  */
 export async function performCloseOut(v2Terminals: readonly ResolvedV2Terminal[]): Promise<ZReportRecord> {
-  const kv = resolveKvStore();
-  const v1State = useV1Store.getState();
-  const v2State = useV2Store.getState();
-  const { record, nextState } = commitCombinedZReport(
-    {
-      v1Events: v1State.events,
-      periodStartBlock: v1State.reportState.periodStartBlock,
-      finalizedBlock: v1State.finalizedBlock,
-      v1Terminals: v1State.terminals,
-      v2Records: v2State.records,
-      v2Terminals,
-      periodStartMs: fiscalPeriodStartMs(v1State.zReports),
-      nowMs: Date.now(),
-    },
-    v1State.reportState.lastZSeq,
-  );
-  await appendZReport(kv, record);
-  await saveReportState(kv, nextState);
-  const current = useV1Store.getState();
-  useV1Store.setState({ zReports: [...current.zReports, record], reportState: nextState });
-  return record;
+  return withSpan("closeout", "closeout.publish", async () => {
+    try {
+      const kv = resolveKvStore();
+      const v1State = useV1Store.getState();
+      const v2State = useV2Store.getState();
+      const { record, nextState } = commitCombinedZReport(
+        {
+          v1Events: v1State.events,
+          periodStartBlock: v1State.reportState.periodStartBlock,
+          finalizedBlock: v1State.finalizedBlock,
+          v1Terminals: v1State.terminals,
+          v2Records: v2State.records,
+          v2Terminals,
+          periodStartMs: fiscalPeriodStartMs(v1State.zReports),
+          nowMs: Date.now(),
+        },
+        v1State.reportState.lastZSeq,
+      );
+      await appendZReport(kv, record);
+      await saveReportState(kv, nextState);
+      const current = useV1Store.getState();
+      useV1Store.setState({ zReports: [...current.zReports, record], reportState: nextState });
+      return record;
+    } catch (err) {
+      // Report-generate/publish failure → alert-worthy Sentry issue. `expected`
+      // lets the alert rule exclude user/offline causes (see e2e design).
+      const msg = err instanceof Error ? err.message : String(err);
+      Sentry.captureException(err, {
+        tags: { component: "closeout", expected: String(isExpectedError(msg)) },
+      });
+      throw err;
+    }
+  });
 }
