@@ -2,6 +2,8 @@
 // @paritytech
 
 import * as Sentry from "@sentry/react";
+import { scrubEvent, scrubTransaction } from "./scrub";
+import { getE2eTag } from "./e2e-tag";
 
 /**
  * Minimal Sentry bootstrap for the payment processor. Privacy-first:
@@ -31,5 +33,8 @@ export function initTelemetry(opts: {
     replaysSessionSampleRate: 0.0,
     replaysOnErrorSampleRate: 0.0,
     integrations: [],
+    beforeSend: scrubEvent,
+    beforeSendTransaction: scrubTransaction,
   });
+  const t = getE2eTag(); if (t) Sentry.setTag("tag", t);
 }
