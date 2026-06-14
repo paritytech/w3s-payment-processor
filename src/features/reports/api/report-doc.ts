@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // @paritytech
 
-
 import { envConfig } from "@/config.ts";
 import type { ReportLine, ReportPayment, ReportSnapshot } from "@/features/v1/types.ts";
+import { exportFile } from "@/shared/utils/export-file.ts";
 import { formatPlanck } from "@/shared/utils/format.ts";
 
 export const PROCESSOR_REPORT_FORMAT = "w3s-processor-report";
@@ -76,20 +76,6 @@ function reportDocBaseName(doc: ProcessorReportDoc): string {
     : `w3spay-x-report-${new Date(doc.generatedAtMs).toISOString().slice(0, 16).replace(":", "-")}`;
 }
 
-function saveAs(filename: string, mime: string, content: string): void {
-  try {
-    const blob = new Blob([content], { type: mime });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  } catch (caught) {
-    console.warn("[reports] download failed", caught);
-  }
-}
-
 function escCsv(value: string): string {
   return value.includes(",") || value.includes('"') || value.includes("\n")
     ? `"${value.replaceAll('"', '""')}"`
@@ -116,7 +102,11 @@ export function reportDocToCsv(doc: ProcessorReportDoc): string {
   return [header, ...rows].join("\n");
 }
 
-/** Save a report doc's payments as a local CSV file (browser download). */
+/** Save a report doc's payments as a local CSV file across every app shell. */
 export function downloadReportDocCsv(doc: ProcessorReportDoc): void {
-  saveAs(`${reportDocBaseName(doc)}.csv`, "text/csv", reportDocToCsv(doc));
+  void exportFile({
+    fileName: `${reportDocBaseName(doc)}.csv`,
+    content: reportDocToCsv(doc),
+    mimeType: "text/csv",
+  });
 }

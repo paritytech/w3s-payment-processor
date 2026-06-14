@@ -9,13 +9,9 @@
  * fetches each missing report's ciphertext from Bulletin via the host preimage
  * lookup, decrypts it with the unlock passkey, and merges it into the store.
  */
-import { CID } from "multiformats/cid";
-
 import { loadSavedCreds } from "@/app/unlock-creds.ts";
-import { isInHost } from "@/shared/api/host/connection.ts";
-import { preimageManager } from "@/shared/api/host/host-api.ts";
+import { fetchBulletinPreimage, type FetchBulletinPreimage } from "@/shared/api/host/bulletin-content.ts";
 import { decryptCredentialEnvelope } from "@/shared/utils/wire/credential-envelope.ts";
-import { BLAKE2B_256_CODE, BLAKE2B_256_LENGTH } from "@/shared/utils/wire/cid.ts";
 import type { KvStore } from "@/shared/utils/kv-store.ts";
 import { appendZReport, clampPeriodStart, saveReportState } from "@/features/v1/api/persistence.ts";
 import { useV1Store } from "@/features/v1/store/useV1Store.ts";
@@ -27,11 +23,9 @@ import {
 } from "./report-doc.ts";
 import { claimedReportSeqs, readProcessorReportSlot } from "./report-storage.ts";
 
-const PREIMAGE_LOOKUP_TIMEOUT_MS = 30_000;
-
 /** Test seams; production callers pass nothing. */
 export interface ReportSyncDeps {
-  readonly lookupPreimage?: (key: `0x${string}`) => Promise<Uint8Array | null>;
+  readonly fetchPreimage?: FetchBulletinPreimage;
   readonly inHost?: () => boolean;
 }
 
@@ -68,15 +62,14 @@ async function runSync(kv: KvStore, deps: ReportSyncDeps): Promise<number> {
   );
   if (claimed.length === 0) return 0;
 
-  const inHost = deps.inHost ?? isInHost;
-  const lookup = deps.lookupPreimage ?? lookupHostPreimage;
+  const fetchPreimage = deps.fetchPreimage ?? fetchBulletinPreimage;
   let changed = 0;
 
   for (const seq of claimed) {
     const local = useV1Store.getState().zReports.find((z) => z.seq === seq);
     if (local?.publishState === "published") continue;
     try {
-      changed += await pullSeq({ kv, groupId, passkey, seq, local, inHost, lookup });
+      changed += await pullSeq({ kv, groupId, passkey, seq, local, fetchPreimage, inHost: deps.inHost });
     } catch (caught) {
       console.warn(`[reports] sync: pulling seq ${seq} failed — skipping`, caught);
     }
@@ -93,8 +86,8 @@ interface PullSeqArgs {
   readonly passkey: string;
   readonly seq: number;
   readonly local: ZReportRecord | undefined;
-  readonly inHost: () => boolean;
-  readonly lookup: (key: `0x${string}`) => Promise<Uint8Array | null>;
+  readonly fetchPreimage: FetchBulletinPreimage;
+  readonly inHost: (() => boolean) | undefined;
 }
 
 async function pullSeq(args: PullSeqArgs): Promise<number> {
@@ -118,69 +111,19 @@ async function pullSeq(args: PullSeqArgs): Promise<number> {
     return 0;
   }
 
-  if (!args.inHost()) {
+  const pre = await args.fetchPreimage(slot.cid, { inHost: args.inHost });
+  if (pre.kind === "no-host") {
     console.warn(`[reports] sync: seq ${args.seq} needs a host preimage lookup — skipping in standalone mode`);
     return 0;
   }
-
-  const key = preimageKeyFromCid(slot.cid);
-  if (key == null) {
-    console.warn(`[reports] sync: seq ${args.seq} cid ${slot.cid} is not a Bulletin blake2b-256 cid — skipping`);
+  if (pre.kind === "unavailable") {
+    console.warn(`[reports] sync: seq ${args.seq} preimage unavailable — skipping (${pre.reason})`);
     return 0;
   }
-
-  console.info(`[reports] sync: seq ${args.seq} — fetching preimage ${key}…`);
-  const bytes = await args.lookup(key);
-  if (bytes == null) {
-    console.warn(
-      `[reports] sync: seq ${args.seq} preimage ${key} not found on Bulletin (expired or not yet synced) — skipping`,
-    );
-    return 0;
-  }
-
-  const doc = await decryptReportDoc(bytes, args.passkey, args.groupId, args.seq);
+  const doc = await decryptReportDoc(pre.bytes, args.passkey, args.groupId, args.seq);
   await persistRecord(args.kv, docToRecord(doc, args.seq, slot.cid));
   console.info(`[reports] sync: seq ${args.seq} pulled into the local store (cid ${slot.cid})`);
   return 1;
-}
-
-/**
- * The host pushes `null` while the preimage is not in its local cache yet and
- * follows up once the Bulletin fetch completes — only a non-null payload (or
- * the timeout) is a final answer.
- */
-function lookupHostPreimage(key: `0x${string}`): Promise<Uint8Array | null> {
-  const { promise, resolve, reject } = Promise.withResolvers<Uint8Array | null>();
-  const timer = setTimeout(() => {
-    subscription.unsubscribe();
-    resolve(null);
-  }, PREIMAGE_LOOKUP_TIMEOUT_MS);
-  const subscription = preimageManager.lookup(key, (preimage) => {
-    if (preimage == null) {
-      console.info(`[reports] sync: preimage ${key} not in the host cache yet — waiting for the Bulletin fetch…`);
-      return;
-    }
-    clearTimeout(timer);
-    resolve(preimage);
-    queueMicrotask(() => subscription.unsubscribe());
-  });
-  subscription.onInterrupt(() => {
-    clearTimeout(timer);
-    reject(new Error(`preimage lookup ${key} was interrupted by the host`));
-  });
-  return promise;
-}
-
-function preimageKeyFromCid(cid: string): `0x${string}` | null {
-  try {
-    const { code, digest } = CID.parse(cid).multihash;
-    if (code !== BLAKE2B_256_CODE || digest.length !== BLAKE2B_256_LENGTH) return null;
-    let hex = "0x";
-    for (const byte of digest) hex += byte.toString(16).padStart(2, "0");
-    return hex as `0x${string}`;
-  } catch {
-    return null;
-  }
 }
 
 async function decryptReportDoc(

@@ -90,46 +90,77 @@ export function createCoinsClaimEngine(
     }
   };
 
-  const claimWithRetries = async (coins: Uint8Array[], amountPlanck: bigint): Promise<ClaimResult> => {
-    let lastDiagnostic = "host rejected the top-up";
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      console.log(
-        `[v2:claim] topUp attempt ${attempt}/${maxAttempts} (${amountPlanck}n, coins=${coins.length}) → ` +
-          `host.coinpayment — host SDK builds the on-chain consume+credit tx from each 64B key`,
-      );
-      try {
-        await attemptTopUp(coins, amountPlanck);
-        console.log(
-          `[v2:claim] topUp resolved — coins credited to host wallet` +
-            (attempt > 1 ? ` (attempt ${attempt}/${maxAttempts})` : ""),
-        );
-        return { status: "claimed", attempts: attempt };
-      } catch (error) {
-        lastDiagnostic = error instanceof Error ? error.message : String(error);
-        console.warn(`[v2:claim] topUp attempt ${attempt}/${maxAttempts} rejected/timed out: ${lastDiagnostic}`);
-        if (attempt < maxAttempts) await sleep(retryDelayMs);
-      }
-    }
-    return { status: "claim_failed", attempts: maxAttempts, diagnostic: lastDiagnostic };
+  // The claim queue. A single worker drains jobs FIFO, running exactly one
+  // pallet call at a time (the host wallet can't safely process concurrent
+  // top-ups). A job that fails — or times out, including a top-up that never
+  // settles — is re-queued at the BACK rather than retried in place, so a slow
+  // or hanging payment can never starve the claims behind it: they are
+  // serviced between its attempts. After `maxAttempts` the job settles as
+  // claim_failed. Because every attempt is bounded by `attemptTopUp`'s timeout,
+  // a permanently-hanging top-up occupies the worker for at most one timeout
+  // before yielding — it can never wedge the queue.
+  interface ClaimJob {
+    coins: Uint8Array[];
+    amountPlanck: bigint;
+    /** 1-based number of the attempt about to run; carried across re-queues. */
+    attempt: number;
+    settle: (result: ClaimResult) => void;
+  }
+
+  const queue: ClaimJob[] = [];
+  let working = false;
+
+  const enqueue = (job: ClaimJob): void => {
+    queue.push(job);
+    if (!working) void drain();
   };
 
-  // One pallet call at a time: the FIFO tail every claim chains onto.
-  let queueTail: Promise<unknown> = Promise.resolve();
+  // Re-queue a failed job at the back. The retry delay is scheduled OFF the
+  // worker (setTimeout) so it never blocks the jobs queued behind it; with a
+  // zero delay the job is appended synchronously and picked up this drain.
+  const requeue = (job: ClaimJob): void => {
+    if (retryDelayMs > 0) setTimeout(() => enqueue(job), retryDelayMs);
+    else enqueue(job);
+  };
+
+  const drain = async (): Promise<void> => {
+    working = true;
+    try {
+      for (let job = queue.shift(); job; job = queue.shift()) {
+        console.log(
+          `[v2:claim] topUp attempt ${job.attempt}/${maxAttempts} (${job.amountPlanck}n, coins=${job.coins.length}) → ` +
+            `host.coinpayment — host SDK builds the on-chain consume+credit tx from each 64B key (queue depth ${queue.length})`,
+        );
+        try {
+          await attemptTopUp(job.coins, job.amountPlanck);
+          console.log(
+            `[v2:claim] topUp resolved — coins credited to host wallet` +
+              (job.attempt > 1 ? ` (attempt ${job.attempt}/${maxAttempts})` : ""),
+          );
+          job.settle({ status: "claimed", attempts: job.attempt });
+        } catch (error) {
+          const diagnostic = error instanceof Error ? error.message : String(error);
+          console.warn(`[v2:claim] topUp attempt ${job.attempt}/${maxAttempts} rejected/timed out: ${diagnostic}`);
+          if (job.attempt >= maxAttempts) {
+            job.settle({ status: "claim_failed", attempts: maxAttempts, diagnostic });
+          } else {
+            requeue({ ...job, attempt: job.attempt + 1 });
+          }
+        }
+      }
+    } finally {
+      working = false;
+    }
+  };
 
   return {
     enabled: true,
     claim(coins: Uint8Array[], amountPlanck: bigint): Promise<ClaimResult> {
-      const run = queueTail.then(() => claimWithRetries(coins, amountPlanck));
-      queueTail = run; // claimWithRetries never rejects, so the tail can't wedge
-      return run;
+      const { promise, resolve } = Promise.withResolvers<ClaimResult>();
+      enqueue({ coins, amountPlanck, attempt: 1, settle: resolve });
+      return promise;
     },
   };
-}
-
-function sleep(ms: number): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
 }
 
 export interface ResolveClaimEngineOptions {

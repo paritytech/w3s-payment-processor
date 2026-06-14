@@ -13,7 +13,9 @@ import {
   resolveRemoteProcessorConfig,
   resolveCredentialUrl,
   RemoteCredentialsError,
+  fetchEnvelopeForCid,
 } from "@/shared/api/remote-credentials.ts";
+import { type FetchBulletinPreimage } from "@/shared/api/host/bulletin-content.ts";
 
 const ALICE = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
 const TOPIC_HEX = "d2cef99ad3b1681a79b73e4f806c77b63d7c06077905dd7afdb1df39e03746bf";
@@ -125,6 +127,47 @@ describe("resolveRemoteProcessorConfig — fails closed", () => {
     const envelope = await envelopeFor(bundle("funkhaus-pos"), "pw");
     await expect(
       resolveRemoteProcessorConfig("a-different-group", "pw", { envelope }),
+    ).rejects.toBeInstanceOf(RemoteCredentialsError);
+  });
+});
+
+describe("fetchEnvelopeForCid", () => {
+  const failFetch: typeof fetch = () => {
+    throw new Error("fetch must not run when the host serves the preimage");
+  };
+
+  it("returns the host preimage JSON without touching the gateway", async () => {
+    const fetchPreimage: FetchBulletinPreimage = () =>
+      Promise.resolve({ kind: "ok", bytes: new TextEncoder().encode(JSON.stringify({ a: 1 })) });
+    await expect(
+      fetchEnvelopeForCid("bafytestcid", { fetchPreimage, fetchImpl: failFetch }),
+    ).resolves.toEqual({ a: 1 });
+  });
+
+  it("falls back to the HTTPS gateway only when not in a host", async () => {
+    const fetchPreimage: FetchBulletinPreimage = () => Promise.resolve({ kind: "no-host" });
+    const fetchImpl = (() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        arrayBuffer: () => Promise.resolve(new TextEncoder().encode(JSON.stringify({ b: 2 })).buffer),
+      } as Response)) as typeof fetch;
+    await expect(fetchEnvelopeForCid("bafytestcid", { fetchPreimage, fetchImpl })).resolves.toEqual({ b: 2 });
+  });
+
+  it("fails closed when the host has the content but serves it corrupt", async () => {
+    const fetchPreimage: FetchBulletinPreimage = () =>
+      Promise.resolve({ kind: "unavailable", reason: "integrity check failed" });
+    await expect(
+      fetchEnvelopeForCid("bafytestcid", { fetchPreimage, fetchImpl: failFetch }),
+    ).rejects.toBeInstanceOf(RemoteCredentialsError);
+  });
+
+  it("rejects an oversized host preimage before parsing", async () => {
+    const fetchPreimage: FetchBulletinPreimage = () =>
+      Promise.resolve({ kind: "ok", bytes: new Uint8Array(256 * 1024 + 1) });
+    await expect(
+      fetchEnvelopeForCid("bafytestcid", { fetchPreimage, fetchImpl: failFetch }),
     ).rejects.toBeInstanceOf(RemoteCredentialsError);
   });
 });

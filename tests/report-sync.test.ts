@@ -29,6 +29,7 @@ import type { ZReportRecord } from "@/features/v1/types.ts";
 import { createMemoryKvStore, type KvStore } from "@/shared/utils/kv-store.ts";
 import { encryptCredentialEnvelope } from "@/shared/utils/wire/credential-envelope.ts";
 import { calculateBulletinCidObject } from "@/shared/utils/wire/cid.ts";
+import { type FetchBulletinPreimage } from "@/shared/api/host/bulletin-content.ts";
 
 const encoder = new TextEncoder();
 
@@ -83,9 +84,14 @@ function mockChain(seqs: number[], slots: Map<number, { cid: string; size: numbe
   );
 }
 
-function lookupFrom(reports: readonly PublishedReport[]): (key: `0x${string}`) => Promise<Uint8Array | null> {
-  const byKey = new Map(reports.map((report) => [report.key, report.bytes]));
-  return (key) => Promise.resolve(byKey.get(key) ?? null);
+function fetchFrom(reports: readonly PublishedReport[]): FetchBulletinPreimage {
+  const byCid = new Map(reports.map((r) => [r.cid, r.bytes]));
+  return (cid) =>
+    Promise.resolve(
+      byCid.has(cid)
+        ? { kind: "ok", bytes: byCid.get(cid)! }
+        : { kind: "unavailable", reason: `no preimage for ${cid}` },
+    );
 }
 
 function pendingLocal(seq: number, patch: Partial<ZReportRecord> = {}): ZReportRecord {
@@ -134,7 +140,7 @@ describe("syncPublishedReports", () => {
       ]),
     );
 
-    const changed = await syncPublishedReports(kv, { inHost: () => true, lookupPreimage: lookupFrom(published) });
+    const changed = await syncPublishedReports(kv, { fetchPreimage: fetchFrom(published) });
 
     expect(changed).toBe(2);
     const { zReports, reportState } = useV1Store.getState();
@@ -153,7 +159,7 @@ describe("syncPublishedReports", () => {
 
     readContractMock.mockClear();
     mockChain([1, 2], new Map());
-    const rerun = await syncPublishedReports(kv, { inHost: () => true, lookupPreimage: lookupFrom([]) });
+    const rerun = await syncPublishedReports(kv, { fetchPreimage: fetchFrom([]) });
     expect(rerun).toBe(0);
     const slotReads = readContractMock.mock.calls.filter(
       ([, opts]) => (opts as { functionName: string }).functionName === "getProcessorReport",
@@ -165,12 +171,12 @@ describe("syncPublishedReports", () => {
     const landedCid = (await publish(makeDoc(1, []))).cid;
     useV1Store.setState({ zReports: [pendingLocal(1, { lastAttemptCid: landedCid })] });
     mockChain([1], new Map([[1, { cid: landedCid, size: 10 }]]));
-    const lookup = vi.fn();
+    const fetchSpy = vi.fn(() => Promise.resolve({ kind: "no-host" as const }));
 
-    const changed = await syncPublishedReports(kv, { inHost: () => true, lookupPreimage: lookup });
+    const changed = await syncPublishedReports(kv, { fetchPreimage: fetchSpy });
 
     expect(changed).toBe(1);
-    expect(lookup).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
     const record = useV1Store.getState().zReports.find((z) => z.seq === 1);
     expect(record).toMatchObject({ publishState: "published", cid: landedCid });
     expect((await loadZReports(kv))[0]).toMatchObject({ publishState: "published", cid: landedCid });
@@ -181,10 +187,7 @@ describe("syncPublishedReports", () => {
     const foreignCid = calculateBulletinCidObject(encoder.encode("foreign")).toString();
     mockChain([1], new Map([[1, { cid: foreignCid, size: 7 }]]));
 
-    const changed = await syncPublishedReports(kv, {
-      inHost: () => true,
-      lookupPreimage: () => Promise.resolve(null),
-    });
+    const changed = await syncPublishedReports(kv, { fetchPreimage: fetchFrom([]) });
 
     expect(changed).toBe(0);
     expect(useV1Store.getState().zReports[0]).toMatchObject({ seq: 1, publishState: "pending" });
@@ -195,7 +198,7 @@ describe("syncPublishedReports", () => {
     const foreign = await publish(makeDoc(1, []), "someone-elses-passkey");
     mockChain([1], new Map([[1, { cid: foreign.cid, size: foreign.bytes.length }]]));
 
-    const changed = await syncPublishedReports(kv, { inHost: () => true, lookupPreimage: lookupFrom([foreign]) });
+    const changed = await syncPublishedReports(kv, { fetchPreimage: fetchFrom([foreign]) });
 
     expect(changed).toBe(0);
     expect(useV1Store.getState().zReports).toHaveLength(0);

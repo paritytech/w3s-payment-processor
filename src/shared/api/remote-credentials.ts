@@ -23,6 +23,7 @@ import { readContract } from "@/shared/api/contracts/read.ts";
 import { W3SPayRegistryABI } from "@/features/v1/api/registry-abi.ts";
 import { mainChainClient } from "@/shared/api/client.ts";
 import { isInHost } from "@/shared/api/host/connection.ts";
+import { fetchBulletinPreimage, type FetchBulletinPreimage } from "@/shared/api/host/bulletin-content.ts";
 
 /** Decoded `getProcessorConfig` tuple — mirrors the Solidity `ProcessorConfigRecord`. */
 interface RawProcessorConfigRecord {
@@ -122,48 +123,76 @@ export async function resolveProcessorConfigCid(groupId: string): Promise<string
   }
 }
 
-/**
- * Fetch and JSON-parse the encrypted envelope for `groupId`: resolve its CID
- * from the registry contract, rewrite to the IPFS gateway URL, then fetch.
- * Fails closed when the group has no published config, the source is
- * unreachable, oversized, or non-JSON.
- */
-export async function fetchCredentialEnvelope(groupId: string): Promise<unknown> {
-  const cid = await resolveProcessorConfigCid(groupId);
-  const url = resolveCredentialUrl(`ipfs://${cid}`, envConfig.remoteCredentials.ipfsGateway);
-  console.log(`[unlock 2/3] → GET ${url}`);
-  const t1 = performance.now();
-  let response: Response;
-  try {
-    response = await fetch(url, { cache: "no-store" });
-  } catch {
-    throw new RemoteCredentialsError(
-      "couldn't reach the credentials source",
-      `Network error fetching ${url}.`,
-    );
-  }
-  if (!response.ok) {
-    throw new RemoteCredentialsError(
-      "the credentials source returned an error",
-      `HTTP ${response.status} fetching ${url}.`,
-    );
-  }
-  const text = await response.text();
-  console.log(`[unlock 2/3] ← HTTP ${response.status}  ${text.length} bytes  (${Math.round(performance.now() - t1)}ms)`);
-  if (text.length > MAX_ENVELOPE_BYTES) {
+/** Enforce the size cap then JSON-parse envelope bytes; throws `RemoteCredentialsError`. */
+function parseEnvelopeBytes(bytes: Uint8Array): unknown {
+  if (bytes.length > MAX_ENVELOPE_BYTES) {
     throw new RemoteCredentialsError(
       "the credentials envelope is unexpectedly large",
       `Envelope exceeds ${MAX_ENVELOPE_BYTES} bytes — refusing to process.`,
     );
   }
   try {
-    return JSON.parse(text) as unknown;
+    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
   } catch {
     throw new RemoteCredentialsError(
       "the credentials source did not return a valid envelope",
       "Response body was not JSON.",
     );
   }
+}
+
+export interface FetchEnvelopeOptions {
+  readonly fetchPreimage?: FetchBulletinPreimage;
+  readonly fetchImpl?: typeof fetch;
+}
+
+/**
+ * Fetch the encrypted envelope for `cid` host-first: resolve over the host
+ * preimage transport, falling back to the HTTPS IPFS gateway only when not in
+ * a host (`no-host`). A host that holds corrupt or missing content fails
+ * closed rather than silently reaching a public gateway.
+ */
+export async function fetchEnvelopeForCid(cid: string, opts: FetchEnvelopeOptions = {}): Promise<unknown> {
+  const fetchPreimage = opts.fetchPreimage ?? fetchBulletinPreimage;
+  const pre = await fetchPreimage(cid);
+  if (pre.kind === "ok") {
+    console.log(`[unlock 2/3] ← host preimage  ${pre.bytes.length} bytes`);
+    return parseEnvelopeBytes(pre.bytes);
+  }
+  if (pre.kind === "unavailable") {
+    throw new RemoteCredentialsError(
+      "couldn't fetch the credentials from the host",
+      `Host preimage lookup for ${cid} failed: ${pre.reason}.`,
+    );
+  }
+  // no-host → HTTPS gateway fallback (the only outcome that licenses a public gateway).
+  const url = resolveCredentialUrl(`ipfs://${cid}`, envConfig.remoteCredentials.ipfsGateway);
+  console.log(`[unlock 2/3] → GET ${url}`);
+  const t1 = performance.now();
+  const doFetch = opts.fetchImpl ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
+  let response: Response;
+  try {
+    response = await doFetch(url, { cache: "no-store" });
+  } catch {
+    throw new RemoteCredentialsError("couldn't reach the credentials source", `Network error fetching ${url}.`);
+  }
+  if (!response.ok) {
+    throw new RemoteCredentialsError("the credentials source returned an error", `HTTP ${response.status} fetching ${url}.`);
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  console.log(`[unlock 2/3] ← HTTP ${response.status}  ${bytes.length} bytes  (${Math.round(performance.now() - t1)}ms)`);
+  return parseEnvelopeBytes(bytes);
+}
+
+/**
+ * Fetch and JSON-parse the encrypted envelope for `groupId`: resolve its CID
+ * from the registry contract, then fetch host-first with an HTTPS gateway
+ * fallback. Fails closed when the group has no published config, the source is
+ * unreachable, oversized, or non-JSON.
+ */
+export async function fetchCredentialEnvelope(groupId: string): Promise<unknown> {
+  const cid = await resolveProcessorConfigCid(groupId);
+  return fetchEnvelopeForCid(cid);
 }
 
 export interface ResolveRemoteOptions {

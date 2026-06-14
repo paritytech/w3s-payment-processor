@@ -8,6 +8,7 @@ import { MerchantUnlockGate } from "@/app/MerchantUnlockGate.tsx";
 import { RootNavigator } from "@/app/navigation/RootNavigator.tsx";
 import { envConfig, type ResolvedProcessorConfig } from "@/config.ts";
 import { DebugPanel } from "@/shared/api/host/debug/index.ts";
+import { ExportFallbackModal } from "@/shared/components/ExportFallbackModal.tsx";
 
 
 export function App() {
@@ -15,6 +16,7 @@ export function App() {
   return (
     <AppThemeProvider>
       <AppBody config={config} onUnlock={setConfig} />
+      <ExportFallbackModal />
       {envConfig.debug.enabled ? (
         <DebugPanel config={config} defaultOpen={envConfig.debug.openByDefault} />
       ) : null}
