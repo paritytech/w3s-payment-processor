@@ -7,6 +7,10 @@ import { Icon, type IconName } from "@/shared/components/Icon.tsx";
 import { envConfig } from "@/config.ts";
 import { useProcessorConfig } from "@/shared/store/useProcessorConfig.tsx";
 import { useProtocolSettings } from "@/shared/store/useProtocolSettings.tsx";
+import { Money } from "@/shared/components/Money.tsx";
+import { tone } from "@/shared/utils/tone.ts";
+import { useCoinBalance } from "@/features/v2/api/use-coin-balance.ts";
+import { coinBalanceReadout } from "@/features/v2/api/coin-balance-view.ts";
 
 /** RPC endpoint hostnames the "Direct RPC" route connects to (build-time network config). */
 const RPC_HOSTNAMES = [
@@ -33,6 +37,8 @@ export function Settings({ mobile }: { mobile: boolean }) {
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
+      <WalletBalanceCard mobile={mobile} />
+
       <SettingsCard
         mobile={mobile}
         icon="settings"
@@ -81,6 +87,25 @@ export function Settings({ mobile }: { mobile: boolean }) {
         </div>
       </DisplayIf>
     </div>
+  );
+}
+
+function WalletBalanceCard({ mobile }: { mobile: boolean }) {
+  const { availablePlanck, status } = useCoinBalance();
+  const view = coinBalanceReadout(availablePlanck, status, envConfig.token.decimals);
+  return (
+    <SettingsCard
+      mobile={mobile}
+      icon="wallet"
+      title="Wallet balance"
+      blurb="The merchant coin balance held by the Polkadot host wallet. Live — it moves as coin payments are claimed."
+    >
+      {view.kind === "amount" ? (
+        <Money value={view.token} size="xl" font="serif" />
+      ) : (
+        <span style={{ fontSize: 15, fontWeight: 500, color: tone(view.tone).fg }}>{view.text}</span>
+      )}
+    </SettingsCard>
   );
 }
 

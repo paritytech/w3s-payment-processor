@@ -49,13 +49,13 @@ export interface CoinsTopUpManager {
 }
 
 const DEFAULT_TOPUP_TIMEOUT_MS = 30_000;
-const DEFAULT_MAX_ATTEMPTS = 3;
+const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_RETRY_DELAY_MS = 2_000;
 
 export interface CreateCoinsClaimEngineOptions {
   /** Override the default 30s top-up timeout (test seam; production uses the default). */
   timeoutMs?: number;
-  /** topUp attempts per claim cycle before giving up (default 3). */
+  /** topUp attempts per claim cycle before giving up (default 2 — initial try + 1 retry). */
   maxAttempts?: number;
   /** Pause between attempts (default 2s — lets the host clear the failed tx). */
   retryDelayMs?: number;

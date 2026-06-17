@@ -19,7 +19,8 @@ import type { HostAccountUiState, V2Status } from "@/features/v2/store/useV2Stor
 import type { V1CatchupProgress } from "@/features/v1/store/useV1Store.ts";
 import { v2PaymentKey, type ClaimStatus } from "@/features/v2/types.ts";
 
-import type { PaymentLifecycle, StreamPayment, StreamTerminal, StreamTotals, TerminalTotal, XReportStamp, ZHistoryEntry } from "@/features/dashboard/types.ts";
+import { computeStreamTotals } from "@/features/dashboard/api/stream-totals.ts";
+import type { PaymentLifecycle, StreamPayment, StreamTerminal, StreamTotals, XReportStamp, ZHistoryEntry } from "@/features/dashboard/types.ts";
 
 /**
  * v1 lifecycle from block depth: confirmed once finalized, detected at the very
@@ -233,24 +234,7 @@ export function usePaymentStream(): PaymentStream {
     return { payments: open, historyPayments: closed };
   }, [v1.events, v2.records, periodStartBlock, periodStartMs, decimals, scannedBlock, confirmedBlock]);
 
-  const totals = useMemo<StreamTotals>(() => {
-    const perTill = new Map<string, TerminalTotal>();
-    for (const t of terminals) perTill.set(t.id, { amount: 0, count: 0 });
-    let grand = 0;
-    let count = 0;
-    for (const p of payments) {
-      let cell = perTill.get(p.terminalId);
-      if (!cell) {
-        cell = { amount: 0, count: 0 };
-        perTill.set(p.terminalId, cell);
-      }
-      cell.amount += p.amount;
-      cell.count += 1;
-      grand += p.amount;
-      count += 1;
-    }
-    return { perTill, grand, count };
-  }, [payments, terminals]);
+  const totals = useMemo<StreamTotals>(() => computeStreamTotals(payments, terminals), [payments, terminals]);
 
   const unchecked = useMemo(() => payments.filter((p) => p.checkable && !p.checked).length, [payments]);
 

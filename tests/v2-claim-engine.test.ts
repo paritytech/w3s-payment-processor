@@ -20,26 +20,25 @@ describe("createCoinsClaimEngine", () => {
     expect(topUp).toHaveBeenCalledTimes(1); // no pointless retries on success
   });
 
-  it("retries a failing topUp and claims when a later attempt succeeds", async () => {
+  it("retries a failing topUp and claims when the retry succeeds", async () => {
     const topUp = vi
       .fn<CoinsTopUpManager["topUp"]>()
-      .mockRejectedValueOnce(new Error("host busy"))
       .mockRejectedValueOnce(new Error("host busy"))
       .mockResolvedValueOnce(undefined);
     const engine = createCoinsClaimEngine({ topUp }, { retryDelayMs: 0 });
     const result = await engine.claim(coins, 1n);
-    expect(result).toEqual({ status: "claimed", attempts: 3 });
-    expect(topUp).toHaveBeenCalledTimes(3);
+    expect(result).toEqual({ status: "claimed", attempts: 2 });
+    expect(topUp).toHaveBeenCalledTimes(2);
   });
 
-  it("fails closed after 3 attempts, carrying the attempt count and last cause", async () => {
+  it("fails closed after 2 attempts, carrying the attempt count and last cause", async () => {
     const topUp = vi.fn(async () => {
       throw new Error("host busy");
     });
     const engine = createCoinsClaimEngine({ topUp }, { retryDelayMs: 0 });
     const result = await engine.claim(coins, 1n);
-    expect(result).toEqual({ status: "claim_failed", attempts: 3, diagnostic: "host busy" });
-    expect(topUp).toHaveBeenCalledTimes(3); // tried, tried, tried — then gave up
+    expect(result).toEqual({ status: "claim_failed", attempts: 2, diagnostic: "host busy" });
+    expect(topUp).toHaveBeenCalledTimes(2); // tried, retried — then gave up
   });
 
   it("serializes claims — a pallet call never runs while another is in flight", async () => {

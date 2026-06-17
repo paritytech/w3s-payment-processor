@@ -55,7 +55,9 @@ export function buildCombinedSnapshot(inputs: CombinedPeriodInputs): CombinedSna
   const v1 = computeReport(inputs.v1Events, inputs.periodStartBlock, inputs.finalizedBlock, inputs.v1Terminals);
 
   // Claim status is operational, not fiscal — blocked/failed coin payments
-  // still count (the customer paid; recovery is the merchant's problem).
+  // still count here (the customer paid; recovery is the merchant's problem).
+  // NOTE: the dashboard's *display* running total (`computeStreamTotals`)
+  // deliberately excludes failed claims, so the committed Z can exceed it.
   const v2Payments: ReportPayment[] = inputs.v2Records
     .filter((r) => r.firstSeenAtMs > inputs.periodStartMs && r.firstSeenAtMs <= inputs.nowMs)
     .map((r) => ({

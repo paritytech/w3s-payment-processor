@@ -556,7 +556,7 @@ describe("ingestStatement — retry accounting", () => {
     });
     const statement: StatementLike = { topics: [terminal.topic], data: envelopeFor(terminal, payload) };
 
-    // First delivery: the host stays down — 3 attempts, then a failed record.
+    // First delivery: the host stays down — 2 attempts, then a failed record.
     const failing = createCoinsClaimEngine(
       {
         topUp: async () => {
@@ -566,18 +566,18 @@ describe("ingestStatement — retry accounting", () => {
       { retryDelayMs: 0 },
     );
     const first = await ingestStatement(statement, deps(failing));
-    expect(first).toMatchObject({ claimStatus: "claim_failed", claimAttempts: 3 });
-    expect(first!.claimDiagnostic).toBe("failed after 3 attempts — host busy");
+    expect(first).toMatchObject({ claimStatus: "claim_failed", claimAttempts: 2 });
+    expect(first!.claimDiagnostic).toBe("failed after 2 attempts — host busy");
 
-    // Gossip re-delivers; still down — the record now says 6 tries in total.
+    // Gossip re-delivers; still down — the record now says 4 tries in total.
     const second = await ingestStatement(statement, deps(failing));
-    expect(second).toMatchObject({ claimStatus: "claim_failed", claimAttempts: 6 });
-    expect(second!.claimDiagnostic).toBe("failed after 6 attempts — host busy");
+    expect(second).toMatchObject({ claimStatus: "claim_failed", claimAttempts: 4 });
+    expect(second!.claimDiagnostic).toBe("failed after 4 attempts — host busy");
 
     // Host recovers on the next re-delivery: claimed, history preserved.
     const recovered = createCoinsClaimEngine({ topUp: async () => undefined });
     const third = await ingestStatement(statement, deps(recovered));
-    expect(third).toMatchObject({ claimStatus: "claimed", claimAttempts: 7 });
+    expect(third).toMatchObject({ claimStatus: "claimed", claimAttempts: 5 });
     expect(third!.claimDiagnostic).toBeUndefined();
   });
 });

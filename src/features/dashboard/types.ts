@@ -45,6 +45,17 @@ export interface StreamPayment {
   claimNote?: string;
 }
 
+/**
+ * Whether a payment counts toward monetary rollups — grand total, per-till
+ * subtotals, and payment counts. A failed v2 claim still shows in the stream
+ * with a red "Failed" pill, but it brought in no money: folding it into the
+ * total inflates takings (a failed $9 sale must not turn $31 into $40). v1
+ * payments never fail, so this only ever excludes failed v2 claims.
+ */
+export function countsAsTakings(p: StreamPayment): boolean {
+  return p.status !== "failed";
+}
+
 export interface TerminalTotal {
   amount: number;
   count: number;

@@ -2,8 +2,9 @@
  * Rail-neutral fiscal close. A Z sweeps RFC-6 chain credits by block window
  * AND coin (statement) payments by wall-clock window since the last Z —
  * "it matters only about the amount that we record", not the rail. Claim
- * status is operational, not fiscal: blocked/failed coin payments still
- * count, matching the dashboard's running totals.
+ * status is operational, not fiscal: blocked/failed coin payments still count
+ * in the committed Z. (The dashboard's display running total excludes them —
+ * see stream-totals.test.ts — so the two figures can legitimately differ.)
  */
 import { describe, expect, it } from "vitest";
 

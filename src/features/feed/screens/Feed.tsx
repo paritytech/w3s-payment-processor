@@ -16,7 +16,7 @@ import { DisplayIf } from "@/shared/components/DisplayIf.tsx";
 import { EmptyState } from "@/features/dashboard/components/EmptyState.tsx";
 import { PaymentRow } from "@/features/dashboard/components/PaymentRow.tsx";
 import { PaymentDetailSheet } from "@/features/dashboard/components/PaymentDetailSheet.tsx";
-import type { StreamPayment } from "@/features/dashboard/types.ts";
+import { countsAsTakings, type StreamPayment } from "@/features/dashboard/types.ts";
 import type { PaymentStream } from "@/features/dashboard/api/use-payment-stream.ts";
 
 type StatusFilter = "all" | "unchecked" | "checked";
@@ -99,7 +99,7 @@ export function Feed({ stream, mobile }: { stream: PaymentStream; mobile: boolea
                 <span className="eyebrow">{g.hour}</span>
                 <span style={{ flex: 1, height: 1, background: "var(--border-subtle)" }} />
                 <span className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>
-                  {fmtCash(g.items.reduce((s, p) => s + p.amount, 0))} {envConfig.token.symbol}
+                  {fmtCash(g.items.reduce((s, p) => (countsAsTakings(p) ? s + p.amount : s), 0))} {envConfig.token.symbol}
                 </span>
               </div>
               <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", overflow: "hidden", background: "var(--surface)" }}>
