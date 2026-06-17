@@ -66,7 +66,7 @@ function readEnv() {
     },
     readOnlyOrigin: readString(
       "VITE_READ_ONLY_ORIGIN",
-      "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+      "5C4hrfjw9DjXZTzV3MwzrrAr9P1MLDHajjSidz9bR544LEq1",
     ),
     protocols: {
       v1Enabled: readBool("VITE_V1_LISTENING_ENABLED", true),
