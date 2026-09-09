@@ -43,6 +43,6 @@
     "typescript": "^5",
     "vite": "^7.1.12",
     "vite-node": "^3.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.11"
   }
 }
